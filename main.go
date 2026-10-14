@@ -66,14 +66,26 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 		return err
 	}
 
-	// Stdin counts as piped when it holds non-whitespace content: tests (and
-	// the terminal case) use an empty reader for "no stdin", so no isatty
-	// check is needed. Content is read once, whole, before any validation.
-	raw, err := io.ReadAll(stdin)
-	if err != nil {
-		return fmt.Errorf("reading stdin: %w", err)
+	// A terminal stdin must not be read: io.ReadAll would block until EOF
+	// (Ctrl-D), hanging `capture quick thought`. Detect a terminal via the
+	// os.File method set and treat stdin as absent. Stat error or no Stat
+	// method (pipes, plain readers) falls through to the read path.
+	var raw []byte
+	piped := false
+	isTerminal := false
+	if f, ok := stdin.(interface{ Stat() (os.FileInfo, error) }); ok {
+		if info, err := f.Stat(); err == nil && info.Mode()&os.ModeCharDevice != 0 {
+			isTerminal = true
+		}
 	}
-	piped := strings.TrimSpace(string(raw)) != ""
+	if !isTerminal {
+		b, err := io.ReadAll(stdin)
+		if err != nil {
+			return fmt.Errorf("reading stdin: %w", err)
+		}
+		raw = b
+		piped = strings.TrimSpace(string(raw)) != ""
+	}
 
 	text := strings.Join(flags.Args(), " ")
 	if piped && text != "" {

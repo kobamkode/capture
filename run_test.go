@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -294,6 +296,98 @@ func TestRun(t *testing.T) {
 				t.Errorf("content of %s = %q, want %q", tc.wantFile, got, tc.want)
 			}
 		})
+	}
+}
+
+// statReader implements io.Reader plus the Stat method run() type-asserts on,
+// so tests can fake a terminal without a real TTY. With no data its Read
+// always fails: a char-device stdin must never be read.
+type statReader struct {
+	mode fs.FileMode
+	r    *strings.Reader
+	read bool
+}
+
+func newStatReader(mode fs.FileMode, data string) *statReader {
+	s := &statReader{mode: mode}
+	if data != "" {
+		s.r = strings.NewReader(data)
+	}
+	return s
+}
+
+func (r *statReader) Read(p []byte) (int, error) {
+	r.read = true
+	if r.r == nil {
+		return 0, errors.New("statReader: Read called but must not be")
+	}
+	return r.r.Read(p)
+}
+
+func (r *statReader) Stat() (os.FileInfo, error) { return statInfo{r.mode}, nil }
+
+// statInfo is an os.FileInfo whose Mode is whatever the test needs.
+type statInfo struct{ mode fs.FileMode }
+
+func (i statInfo) Name() string       { return "fake" }
+func (i statInfo) Size() int64        { return 0 }
+func (i statInfo) Mode() fs.FileMode  { return i.mode }
+func (i statInfo) ModTime() time.Time { return time.Time{} }
+func (i statInfo) IsDir() bool        { return false }
+func (i statInfo) Sys() any           { return nil }
+
+func TestRunTreatsCharDeviceStdinAsAbsent(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+	stdin := newStatReader(os.ModeCharDevice, "")
+
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"quick", "thought"}, getenv, testClock, stdin, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run returned %v, want nil for char-device stdin", err)
+	}
+	if stdin.read {
+		t.Error("stdin was read on a char device; a terminal would block until EOF")
+	}
+	got, err := os.ReadFile(filepath.Join(vault, "2026-10-14.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "- 09:15 | quick thought\n"; string(got) != want {
+		t.Errorf("2026-10-14.md = %q, want %q", got, want)
+	}
+}
+
+func TestRunReadsNonCharStatableStdin(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+	// Stat says "not a terminal" (regular file / pipe): read path as today.
+	stdin := newStatReader(0, "  first  \n\nsecond\n")
+
+	var stdout, stderr bytes.Buffer
+	err := run(nil, getenv, testClock, stdin, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run returned %v, want nil", err)
+	}
+	if !stdin.read {
+		t.Error("stdin not read although Stat reported a non-char device")
+	}
+	got, err := os.ReadFile(filepath.Join(vault, "2026-10-14.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "- 09:15 | first\n- 09:15 | second\n"; string(got) != want {
+		t.Errorf("2026-10-14.md = %q, want %q", got, want)
 	}
 }
 
