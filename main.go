@@ -48,7 +48,30 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 		return fmt.Errorf("CAPTURE_VAULT is not a directory: %s", vault)
 	}
 
-	path := filepath.Join(vault, now.Format(dailyFormat)+".md")
+	// CAPTURE_DAILY_DIR selects a subfolder that must already exist: a typo
+	// must fail rather than fork the vault structure by auto-creating it.
+	dir := vault
+	if d := getenv("CAPTURE_DAILY_DIR"); d != "" {
+		dir = filepath.Join(vault, d)
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			return fmt.Errorf("CAPTURE_DAILY_DIR is not a directory: %s", d)
+		}
+	}
+
+	// CAPTURE_DAILY_FORMAT is a Go time layout. The formatted name must parse
+	// back to today's date, so strftime-style garbage (e.g. %Y-%m-%d) fails
+	// instead of silently writing one wrong file for every day.
+	layout := getenv("CAPTURE_DAILY_FORMAT")
+	if layout == "" {
+		layout = dailyFormat
+	}
+	name := now.Format(layout)
+	if parsed, err := time.Parse(layout, name); err != nil ||
+		parsed.Year() != now.Year() || parsed.Month() != now.Month() || parsed.Day() != now.Day() {
+		return fmt.Errorf("CAPTURE_DAILY_FORMAT is not a valid Go time layout: %s", layout)
+	}
+
+	path := filepath.Join(dir, name+".md")
 	// Note entries only in this ticket: every non-empty trimmed stdin line,
 	// or the joined args, renders as one "- HH:MM | text" line.
 	var buf strings.Builder

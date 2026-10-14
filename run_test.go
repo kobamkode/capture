@@ -14,15 +14,18 @@ var testClock = time.Date(2026, 10, 14, 9, 15, 0, 0, time.FixedZone("UTC+7", 7*3
 
 func TestRun(t *testing.T) {
 	cases := []struct {
-		name        string
-		vaultMode   string // "unset", "missing", "file", "dir"
-		args        []string
-		stdin       string
-		now         time.Time
-		preExisting *string
-		wantErr     string
-		wantFile    string
-		want        string
+		name         string
+		vaultMode    string // "unset", "missing", "file", "dir"
+		dailyDir     string // value for CAPTURE_DAILY_DIR; "" = unset
+		makeDailyDir bool   // create vault/dailyDir before running
+		dailyFormat  string // value for CAPTURE_DAILY_FORMAT; "" = unset
+		args         []string
+		stdin        string
+		now          time.Time
+		preExisting  *string
+		wantErr      string
+		wantFile     string
+		want         string
 	}{
 		{
 			name:      "CAPTURE_VAULT unset fails naming the variable",
@@ -118,6 +121,52 @@ func TestRun(t *testing.T) {
 			wantFile: "2026-10-14.md",
 			want:     "- 08:00 | earlier\n- 09:15 | new\n",
 		},
+		{
+			name:      "CAPTURE_DAILY_DIR unset writes at vault root",
+			vaultMode: "dir",
+			args:      []string{"hello"},
+			wantFile:  "2026-10-14.md",
+			want:      "- 09:15 | hello\n",
+		},
+		{
+			name:         "CAPTURE_DAILY_DIR set and existing writes inside the folder",
+			vaultMode:    "dir",
+			dailyDir:     "Journal",
+			makeDailyDir: true,
+			args:         []string{"hello"},
+			wantFile:     filepath.Join("Journal", "2026-10-14.md"),
+			want:         "- 09:15 | hello\n",
+		},
+		{
+			name:      "CAPTURE_DAILY_DIR set and missing fails naming the variable",
+			vaultMode: "dir",
+			dailyDir:  "Missing",
+			args:      []string{"hello"},
+			wantErr:   "CAPTURE_DAILY_DIR",
+		},
+		{
+			name:        "CAPTURE_DAILY_FORMAT unset uses the default name",
+			vaultMode:   "dir",
+			dailyFormat: "",
+			args:        []string{"hello"},
+			wantFile:    "2026-10-14.md",
+			want:        "- 09:15 | hello\n",
+		},
+		{
+			name:        "CAPTURE_DAILY_FORMAT set renames the file",
+			vaultMode:   "dir",
+			dailyFormat: "02-01-2006",
+			args:        []string{"hello"},
+			wantFile:    "14-10-2026.md",
+			want:        "- 09:15 | hello\n",
+		},
+		{
+			name:        "invalid CAPTURE_DAILY_FORMAT fails naming the variable",
+			vaultMode:   "dir",
+			dailyFormat: "%Y-%m-%d",
+			args:        []string{"hello"},
+			wantErr:     "CAPTURE_DAILY_FORMAT",
+		},
 	}
 
 	for _, tc := range cases {
@@ -136,6 +185,11 @@ func TestRun(t *testing.T) {
 			if tc.vaultMode != "unset" {
 				vaultValue = vault
 			}
+			if tc.makeDailyDir {
+				if err := os.Mkdir(filepath.Join(vault, tc.dailyDir), 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if tc.preExisting != nil {
 				if err := os.WriteFile(filepath.Join(vault, "2026-10-14.md"), []byte(*tc.preExisting), 0644); err != nil {
 					t.Fatal(err)
@@ -148,8 +202,13 @@ func TestRun(t *testing.T) {
 			}
 			var stdout, stderr bytes.Buffer
 			getenv := func(key string) string {
-				if key == "CAPTURE_VAULT" {
+				switch key {
+				case "CAPTURE_VAULT":
 					return vaultValue
+				case "CAPTURE_DAILY_DIR":
+					return tc.dailyDir
+				case "CAPTURE_DAILY_FORMAT":
+					return tc.dailyFormat
 				}
 				return ""
 			}
@@ -162,6 +221,11 @@ func TestRun(t *testing.T) {
 				}
 				if !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)
+				}
+				if tc.dailyDir != "" && !tc.makeDailyDir {
+					if _, statErr := os.Stat(filepath.Join(vault, tc.dailyDir)); !os.IsNotExist(statErr) {
+						t.Errorf("folder %s must not be created on failure", tc.dailyDir)
+					}
 				}
 				return
 			}
