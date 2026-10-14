@@ -108,6 +108,55 @@ func TestRun(t *testing.T) {
 			wantErr:   "empty capture",
 		},
 		{
+			name:      "-t renders a task checkbox line with no timestamp",
+			vaultMode: "dir",
+			args:      []string{"-t", "go to dentist"},
+			wantFile:  "2026-10-14.md",
+			want:      "- [ ] go to dentist\n",
+		},
+		{
+			name:      "--todo renders the same task line as -t",
+			vaultMode: "dir",
+			args:      []string{"--todo", "go to dentist"},
+			wantFile:  "2026-10-14.md",
+			want:      "- [ ] go to dentist\n",
+		},
+		{
+			name:      "-- separator captures dash-leading text as a note",
+			vaultMode: "dir",
+			args:      []string{"--", "-todo", "list"},
+			wantFile:  "2026-10-14.md",
+			want:      "- 09:15 | -todo list\n",
+		},
+		{
+			name:      "dash-word after first positional stays text",
+			vaultMode: "dir",
+			args:      []string{"buy", "milk", "-todo"},
+			wantFile:  "2026-10-14.md",
+			want:      "- 09:15 | buy milk -todo\n",
+		},
+		{
+			name:      "-t with no text fails empty capture",
+			vaultMode: "dir",
+			args:      []string{"-t"},
+			wantErr:   "empty capture",
+		},
+		{
+			name:      "-t applies to stdin lines rendering tasks",
+			vaultMode: "dir",
+			args:      []string{"-t"},
+			stdin:     "  first task  \n\n   \nsecond task\n",
+			wantFile:  "2026-10-14.md",
+			want:      "- [ ] first task\n- [ ] second task\n",
+		},
+		{
+			name:      "-t with args and stdin together is a hard error",
+			vaultMode: "dir",
+			args:      []string{"-t", "hello"},
+			stdin:     "piped\n",
+			wantErr:   "arguments and stdin",
+		},
+		{
 			name:      "repairs missing trailing newline before append",
 			vaultMode: "dir",
 			args:      []string{"new"},
@@ -181,6 +230,42 @@ func TestRun(t *testing.T) {
 				t.Errorf("content of %s = %q, want %q", tc.wantFile, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRunMixesNotesAndTasksInOneFile(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+
+	steps := [][]string{
+		{"first", "thought"},
+		{"-t", "go to dentist"},
+		{"--todo", "buy milk"},
+	}
+	for _, args := range steps {
+		var stdout, stderr bytes.Buffer
+		if err := run(args, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+			t.Fatalf("run(%v): %v", args, err)
+		}
+	}
+
+	got, err := os.ReadFile(filepath.Join(vault, "2026-10-14.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "- 09:15 | first thought\n- [ ] go to dentist\n- [ ] buy milk\n"
+	if string(got) != want {
+		t.Errorf("2026-10-14.md = %q, want %q", got, want)
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(string(got), "\n"), "\n") {
+		if strings.HasPrefix(line, "- [ ] ") && strings.Contains(line, "|") {
+			t.Errorf("task line %q must never carry a timestamp or pipe", line)
+		}
 	}
 }
 
