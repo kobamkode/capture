@@ -8,3 +8,6 @@
 
 # Build output
 /capture
+
+# Local environment (copy .env.example)
+.env
