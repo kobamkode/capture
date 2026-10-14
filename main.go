@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -22,6 +23,15 @@ func main() {
 }
 
 func run(args []string, getenv func(string) string, now time.Time, stdin io.Reader, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("capture", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	var task bool
+	flags.BoolVar(&task, "t", false, "record a task instead of a note")
+	flags.BoolVar(&task, "todo", false, "record a task instead of a note")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+
 	// Stdin counts as piped when it holds non-whitespace content: tests (and
 	// the terminal case) use an empty reader for "no stdin", so no isatty
 	// check is needed. Content is read once, whole, before any validation.
@@ -31,7 +41,7 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 	}
 	piped := strings.TrimSpace(string(raw)) != ""
 
-	text := strings.Join(args, " ")
+	text := strings.Join(flags.Args(), " ")
 	if piped && text != "" {
 		return errors.New("arguments and stdin at once are ambiguous")
 	}
@@ -72,17 +82,24 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 	}
 
 	path := filepath.Join(dir, name+".md")
-	// Note entries only in this ticket: every non-empty trimmed stdin line,
-	// or the joined args, renders as one "- HH:MM | text" line.
+	// Task entries render "- [ ] text" with no timestamp; note entries
+	// render "- HH:MM | text". Piped stdin yields one entry per non-empty
+	// trimmed line; the task flag applies to stdin-derived entries too.
+	entry := func(s string) string {
+		if task {
+			return "- [ ] " + s + "\n"
+		}
+		return "- " + now.Format("15:04") + " | " + s + "\n"
+	}
 	var buf strings.Builder
 	if piped {
 		for _, l := range strings.Split(string(raw), "\n") {
 			if l = strings.TrimSpace(l); l != "" {
-				buf.WriteString("- " + now.Format("15:04") + " | " + l + "\n")
+				buf.WriteString(entry(l))
 			}
 		}
 	} else {
-		buf.WriteString("- " + now.Format("15:04") + " | " + text + "\n")
+		buf.WriteString(entry(text))
 	}
 	line := buf.String()
 
