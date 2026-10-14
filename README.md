@@ -12,6 +12,8 @@ Each run appends to today's daily note in your vault, creating it when missing. 
 
 ## Install
 
+Recommended — needs a working Go toolchain:
+
 ```sh
 go install github.com/kobamkode/capture@latest
 ```
@@ -21,6 +23,21 @@ or build from source:
 ```sh
 git clone https://github.com/kobamkode/capture
 cd capture && go build -o capture .
+```
+
+Confirm what you have:
+
+```console
+$ capture --version
+capture v0.1.0
+```
+
+## Update
+
+Re-run the install command; `go install` fetches the newest tagged version:
+
+```sh
+go install github.com/kobamkode/capture@latest
 ```
 
 ## Configuration
@@ -40,6 +57,12 @@ cp .env.example .env   # edit values
 source .env
 ```
 
+Or keep the values in an alias in your shell rc (`~/.bashrc`, `~/.zshrc`, …) so `capture` works in any shell without sourcing a file — fill in your paths:
+
+```sh
+alias c="CAPTURE_VAULT= CAPTURE_DAILY_DIR= capture"
+```
+
 The Go layout syntax is what `time.Format` expects: `2006-01-02` is the default, `2006-01-02 Mon` adds the weekday. strftime (`%Y-%m-%d`) is not supported.
 
 ## Usage
@@ -50,6 +73,7 @@ capture -t <text...>         # task entry:  - [ ] text
 capture --todo <text...>     # same as -t
 capture -- -todo list        # text starting with a dash
 printf 'a\nb\n' | capture    # one entry per non-empty line
+capture --version            # print version and exit
 ```
 
 Details:
@@ -75,3 +99,5 @@ go test ./...
 ```
 
 Tests drive a single `run` seam with an injected clock and temp vault directories, so date rollover and timestamps assert deterministically.
+
+Releases are git tags: `go install github.com/kobamkode/capture@latest` resolves to the newest tag, and `--version` reports it because `go install pkg@vX.Y.Z` embeds the module version in the binary. Tag with `git tag v0.2.0 && git push --tags`; a build without a tag reports `devel`.

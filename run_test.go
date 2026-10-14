@@ -336,6 +336,23 @@ func (i statInfo) ModTime() time.Time { return time.Time{} }
 func (i statInfo) IsDir() bool        { return false }
 func (i statInfo) Sys() any           { return nil }
 
+// --version must succeed with CAPTURE_VAULT unset, print to stdout only,
+// and write no daily note.
+func TestRunVersion(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"--version"}, func(string) string { return "" }, testClock,
+		strings.NewReader("piped text"), &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run(--version) returned %v, want nil", err)
+	}
+	if !strings.HasPrefix(stdout.String(), "capture ") {
+		t.Errorf("--version stdout = %q, want prefix %q", stdout.String(), "capture ")
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("--version stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestRunTreatsCharDeviceStdinAsAbsent(t *testing.T) {
 	vault := t.TempDir()
 	getenv := func(key string) string {
@@ -403,7 +420,7 @@ func TestRunHelpDocumentsFlagsAndEnvVars(t *testing.T) {
 		t.Fatal("--help wrote nothing to stdout")
 	}
 	for _, want := range []string{
-		"-t", "--todo",
+		"-t", "--todo", "-version",
 		"--", "stdin",
 		"CAPTURE_VAULT", "CAPTURE_DAILY_DIR", "CAPTURE_DAILY_FORMAT",
 		"2006-01-02",

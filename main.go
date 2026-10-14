@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 )
@@ -32,6 +33,8 @@ Flags:
   -t, --todo
         record a task instead of a note (renders "- [ ] text"); without it the
         entry is a note (renders "- HH:MM | text").
+  -version
+        print the capture version and exit.
 
 Environment:
   CAPTURE_VAULT
@@ -52,18 +55,36 @@ func main() {
 	}
 }
 
+// version reports the module version baked in by `go install pkg@vX.Y.Z`,
+// so git tags drive releases with no constant to bump. Local builds have
+// no module version and report "devel".
+func version() string {
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
+		return info.Main.Version
+	}
+	return "devel"
+}
+
 func run(args []string, getenv func(string) string, now time.Time, stdin io.Reader, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("capture", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	var task bool
 	flags.BoolVar(&task, "t", false, "record a task instead of a note")
 	flags.BoolVar(&task, "todo", false, "record a task instead of a note")
+	var showVersion bool
+	flags.BoolVar(&showVersion, "version", false, "print the capture version and exit")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			io.WriteString(stdout, helpText)
 			return nil
 		}
 		return err
+	}
+	// Version wins before any stdin read or vault check: it must work with
+	// no CAPTURE_VAULT set and must never block on a piped stdin.
+	if showVersion {
+		fmt.Fprintf(stdout, "capture %s\n", version())
+		return nil
 	}
 
 	// A terminal stdin must not be read: io.ReadAll would block until EOF
