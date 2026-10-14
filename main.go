@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -22,7 +23,16 @@ func main() {
 }
 
 func run(args []string, getenv func(string) string, now time.Time, stdin io.Reader, stdout, stderr io.Writer) error {
-	text := strings.Join(args, " ")
+	flags := flag.NewFlagSet("capture", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	var task bool
+	flags.BoolVar(&task, "t", false, "record a task instead of a note")
+	flags.BoolVar(&task, "todo", false, "record a task instead of a note")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+
+	text := strings.Join(flags.Args(), " ")
 	if text == "" {
 		return errors.New("empty capture")
 	}
@@ -38,6 +48,9 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 
 	path := filepath.Join(vault, now.Format(dailyFormat)+".md")
 	line := "- " + now.Format("15:04") + " | " + text + "\n"
+	if task {
+		line = "- [ ] " + text + "\n"
+	}
 
 	existing, err := os.ReadFile(path)
 	if err == nil {
