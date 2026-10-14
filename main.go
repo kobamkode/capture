@@ -15,6 +15,36 @@ import (
 // dailyFormat is the default Go time layout for the daily note filename.
 const dailyFormat = "2006-01-02"
 
+const helpText = `Usage: capture [flags] text...
+       echo "line" | capture
+
+Appends each capture as an entry to today's daily note in an Obsidian vault.
+Success is silent (exit 0); errors go to stderr (exit 1).
+
+Input rules:
+  Arguments: all remaining words are joined with single spaces into one entry.
+  Stdin: when piped, each non-empty line becomes its own entry (blank lines
+  are skipped, lines are trimmed).
+  Arguments and piped stdin together is an error; empty input is an error.
+  Use -- before text that starts with a dash, e.g. capture -- -todo list.
+
+Flags:
+  -t, --todo
+        record a task instead of a note (renders "- [ ] text"); without it the
+        entry is a note (renders "- HH:MM | text").
+
+Environment:
+  CAPTURE_VAULT
+        Vault root directory. Required: capture fails when unset or not an
+        existing directory. No default.
+  CAPTURE_DAILY_DIR
+        Subfolder inside the vault for daily notes. Unset: daily note lives at
+        the vault root. Set but missing: fails (folders are never auto-created).
+  CAPTURE_DAILY_FORMAT
+        Daily note filename as a Go time layout, default ` + dailyFormat + `.
+        Go layout syntax, NOT strftime: 2006-01-02 is correct, %Y-%m-%d fails.
+`
+
 func main() {
 	if err := run(os.Args[1:], os.Getenv, time.Now(), os.Stdin, os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -29,6 +59,10 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 	flags.BoolVar(&task, "t", false, "record a task instead of a note")
 	flags.BoolVar(&task, "todo", false, "record a task instead of a note")
 	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			io.WriteString(stdout, helpText)
+			return nil
+		}
 		return err
 	}
 

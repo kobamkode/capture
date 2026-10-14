@@ -297,6 +297,29 @@ func TestRun(t *testing.T) {
 	}
 }
 
+func TestRunHelpDocumentsFlagsAndEnvVars(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"--help"}, func(string) string { return "" }, testClock,
+		strings.NewReader(""), &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run(--help) returned %v, want nil", err)
+	}
+	help := stdout.String()
+	if help == "" {
+		t.Fatal("--help wrote nothing to stdout")
+	}
+	for _, want := range []string{
+		"-t", "--todo",
+		"--", "stdin",
+		"CAPTURE_VAULT", "CAPTURE_DAILY_DIR", "CAPTURE_DAILY_FORMAT",
+		"2006-01-02",
+	} {
+		if !strings.Contains(help, want) {
+			t.Errorf("--help output missing %q:\n%s", want, help)
+		}
+	}
+}
+
 func TestRunMixesNotesAndTasksInOneFile(t *testing.T) {
 	vault := t.TempDir()
 	getenv := func(key string) string {
