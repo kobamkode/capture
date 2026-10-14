@@ -17,6 +17,7 @@ func TestRun(t *testing.T) {
 		name        string
 		vaultMode   string // "unset", "missing", "file", "dir"
 		args        []string
+		stdin       string
 		now         time.Time
 		preExisting *string
 		wantErr     string
@@ -73,6 +74,40 @@ func TestRun(t *testing.T) {
 			want:     "- 08:00 | earlier\n- 09:15 | later thought\n",
 		},
 		{
+			name:      "single stdin line becomes one note entry",
+			vaultMode: "dir",
+			stdin:     "  hello world  \n",
+			wantFile:  "2026-10-14.md",
+			want:      "- 09:15 | hello world\n",
+		},
+		{
+			name:      "multiple stdin lines become one entry each",
+			vaultMode: "dir",
+			stdin:     "first line\nsecond line\nthird line\n",
+			wantFile:  "2026-10-14.md",
+			want:      "- 09:15 | first line\n- 09:15 | second line\n- 09:15 | third line\n",
+		},
+		{
+			name:      "blank stdin lines skipped and lines trimmed",
+			vaultMode: "dir",
+			stdin:     "  one  \n\n   \n\t two\t\n",
+			wantFile:  "2026-10-14.md",
+			want:      "- 09:15 | one\n- 09:15 | two\n",
+		},
+		{
+			name:      "args and stdin together is a hard error",
+			vaultMode: "dir",
+			args:      []string{"hello"},
+			stdin:     "piped\n",
+			wantErr:   "arguments and stdin",
+		},
+		{
+			name:      "no args and whitespace-only stdin is empty capture",
+			vaultMode: "dir",
+			stdin:     "  \n \t \n",
+			wantErr:   "empty capture",
+		},
+		{
 			name:      "repairs missing trailing newline before append",
 			vaultMode: "dir",
 			args:      []string{"new"},
@@ -119,7 +154,7 @@ func TestRun(t *testing.T) {
 				return ""
 			}
 
-			err := run(tc.args, getenv, now, strings.NewReader(""), &stdout, &stderr)
+			err := run(tc.args, getenv, now, strings.NewReader(tc.stdin), &stdout, &stderr)
 
 			if tc.wantErr != "" {
 				if err == nil {

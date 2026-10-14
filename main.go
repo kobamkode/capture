@@ -22,8 +22,20 @@ func main() {
 }
 
 func run(args []string, getenv func(string) string, now time.Time, stdin io.Reader, stdout, stderr io.Writer) error {
+	// Stdin counts as piped when it holds non-whitespace content: tests (and
+	// the terminal case) use an empty reader for "no stdin", so no isatty
+	// check is needed. Content is read once, whole, before any validation.
+	raw, err := io.ReadAll(stdin)
+	if err != nil {
+		return fmt.Errorf("reading stdin: %w", err)
+	}
+	piped := strings.TrimSpace(string(raw)) != ""
+
 	text := strings.Join(args, " ")
-	if text == "" {
+	if piped && text != "" {
+		return errors.New("arguments and stdin at once are ambiguous")
+	}
+	if !piped && text == "" {
 		return errors.New("empty capture")
 	}
 
@@ -37,7 +49,19 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 	}
 
 	path := filepath.Join(vault, now.Format(dailyFormat)+".md")
-	line := "- " + now.Format("15:04") + " | " + text + "\n"
+	// Note entries only in this ticket: every non-empty trimmed stdin line,
+	// or the joined args, renders as one "- HH:MM | text" line.
+	var buf strings.Builder
+	if piped {
+		for _, l := range strings.Split(string(raw), "\n") {
+			if l = strings.TrimSpace(l); l != "" {
+				buf.WriteString("- " + now.Format("15:04") + " | " + l + "\n")
+			}
+		}
+	} else {
+		buf.WriteString("- " + now.Format("15:04") + " | " + text + "\n")
+	}
+	line := buf.String()
 
 	existing, err := os.ReadFile(path)
 	if err == nil {
