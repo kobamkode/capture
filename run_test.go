@@ -439,7 +439,7 @@ func TestRunHelpDocumentsFlagsAndEnvVars(t *testing.T) {
 		t.Fatal("--help wrote nothing to stdout")
 	}
 	for _, want := range []string{
-		"-t", "--todo", "-version",
+		"-t", "--todo", "-l, --list", "-version",
 		"--", "stdin",
 		"CAPTURE_VAULT", "CAPTURE_DAILY_DIR", "CAPTURE_DAILY_FORMAT",
 		"2006-01-02",

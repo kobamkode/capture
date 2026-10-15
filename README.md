@@ -73,6 +73,8 @@ capture -t <text...>         # task entry:  - [ ] text
 capture --todo <text...>     # same as -t
 capture -- -todo list        # text starting with a dash
 printf 'a\nb\n' | capture    # one entry per non-empty line
+capture -l                   # print today's captures
+capture --list               # same as -l
 capture --version            # print version and exit
 ```
 
@@ -81,6 +83,7 @@ Details:
 - Quotes are optional: `capture i think i need to learn math` is one entry (all arguments joined with single spaces).
 - Note entries carry a 24-hour local timestamp; task entries are unchecked checkboxes without one.
 - Stdin and arguments cannot be combined — that is an error, as is an empty capture.
+- `-l` / `--list` prints today's captures: each capture-shaped line of today's daily note, verbatim in file order. An empty or missing day prints nothing and exits 0. It takes no text, no stdin, and no `-t`.
 - Flags come before the text; a dash-word after the first word is captured as text.
 - Success prints nothing and exits 0. Every error goes to stderr and exits 1.
 
@@ -90,6 +93,21 @@ Details:
 - 09:15 | i think i need to learn math
 - [ ] go to dentist
 - 09:20 | remember the milk
+```
+
+Listing the same day back — only the captures, in file order:
+
+```console
+$ capture -l
+- 09:15 | i think i need to learn math
+- [ ] go to dentist
+- 09:20 | remember the milk
+```
+
+On a day with nothing captured the listing is empty and the exit code is 0:
+
+```console
+$ capture -l
 ```
 
 ## Development
