@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -16,11 +17,22 @@ import (
 // dailyFormat is the default Go time layout for the daily note filename.
 const dailyFormat = "2006-01-02"
 
+// The line shapes a capture renders, the single source for both the writer
+// (entry in run) and the list matcher below: a Note is notePrefix + HH:MM +
+// noteSep + text, a Task is taskPrefix + text. Edit these and both sides follow.
+const (
+	notePrefix     = "- "
+	noteSep        = " | "
+	noteTimeFormat = "15:04"
+	taskPrefix     = "- [ ] "
+)
+
 const helpText = `Usage: capture [flags] text...
        echo "line" | capture
 
 Appends each capture as an entry to today's daily note in an Obsidian vault.
-Success is silent (exit 0); errors go to stderr (exit 1).
+A successful capture prints nothing (exit 0); -l writes the listing to stdout;
+errors go to stderr (exit 1).
 
 Input rules:
   Arguments: all remaining words are joined with single spaces into one entry.
@@ -33,6 +45,10 @@ Flags:
   -t, --todo
         record a task instead of a note (renders "- [ ] text"); without it the
         entry is a note (renders "- HH:MM | text").
+  -l, --list
+        print today's captures: each capture-shaped line of today's daily note
+        verbatim, in file order. An empty or missing day prints nothing and
+        exits 0. Takes no text, no stdin, and no -t.
   -version
         print the capture version and exit.
 
@@ -71,6 +87,9 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 	var task bool
 	flags.BoolVar(&task, "t", false, "record a task instead of a note")
 	flags.BoolVar(&task, "todo", false, "record a task instead of a note")
+	var list bool
+	flags.BoolVar(&list, "l", false, "print today's captures and exit")
+	flags.BoolVar(&list, "list", false, "print today's captures and exit")
 	var showVersion bool
 	flags.BoolVar(&showVersion, "version", false, "print the capture version and exit")
 	if err := flags.Parse(args); err != nil {
@@ -108,12 +127,20 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 		piped = strings.TrimSpace(string(raw)) != ""
 	}
 
+	// List mode accepts no capture input: a mistyped command must fail loudly
+	// instead of silently listing while dropping the input.
 	text := strings.Join(flags.Args(), " ")
-	if piped && text != "" {
-		return errors.New("arguments and stdin at once are ambiguous")
-	}
-	if !piped && text == "" {
-		return errors.New("empty capture")
+	if list {
+		if text != "" || piped || task {
+			return errors.New("list mode accepts no capture input")
+		}
+	} else {
+		if piped && text != "" {
+			return errors.New("arguments and stdin at once are ambiguous")
+		}
+		if !piped && text == "" {
+			return errors.New("empty capture")
+		}
 	}
 
 	vault := getenv("CAPTURE_VAULT")
@@ -149,14 +176,17 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 	}
 
 	path := filepath.Join(dir, name+".md")
+	if list {
+		return listCaptures(path, stdout)
+	}
 	// Task entries render "- [ ] text" with no timestamp; note entries
 	// render "- HH:MM | text". Piped stdin yields one entry per non-empty
 	// trimmed line; the task flag applies to stdin-derived entries too.
 	entry := func(s string) string {
 		if task {
-			return "- [ ] " + s + "\n"
+			return taskPrefix + s + "\n"
 		}
-		return "- " + now.Format("15:04") + " | " + s + "\n"
+		return notePrefix + now.Format(noteTimeFormat) + noteSep + s + "\n"
 	}
 	var buf strings.Builder
 	if piped {
@@ -188,4 +218,37 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 		err = cerr
 	}
 	return err
+}
+
+// noteMarker matches a Note line's prefix, built from the same notePrefix and
+// noteSep constants the writer uses; prose bullets and template headings
+// never carry it.
+var noteMarker = regexp.MustCompile("^" + regexp.QuoteMeta(notePrefix) + `\d{2}:\d{2}` + regexp.QuoteMeta(noteSep))
+
+// isCaptureLine reports whether a Daily note line is a stored capture: a Note
+// or a Task checkbox (unchecked or checked; capture itself only ever writes
+// taskPrefix, the checked states come back from vault edits).
+func isCaptureLine(line string) bool {
+	return noteMarker.MatchString(line) ||
+		strings.HasPrefix(line, taskPrefix) ||
+		strings.HasPrefix(line, "- [x] ") ||
+		strings.HasPrefix(line, "- [X] ")
+}
+
+// listCaptures prints today's capture-shaped lines verbatim in file order.
+// A missing Daily note is an empty result: no output, no error, nothing created.
+func listCaptures(path string, stdout io.Writer) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(string(b), "\n"), "\n") {
+		if isCaptureLine(line) {
+			fmt.Fprintln(stdout, line)
+		}
+	}
+	return nil
 }
