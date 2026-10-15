@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -71,6 +72,9 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 	var task bool
 	flags.BoolVar(&task, "t", false, "record a task instead of a note")
 	flags.BoolVar(&task, "todo", false, "record a task instead of a note")
+	var list bool
+	flags.BoolVar(&list, "l", false, "print today's captures and exit")
+	flags.BoolVar(&list, "list", false, "print today's captures and exit")
 	var showVersion bool
 	flags.BoolVar(&showVersion, "version", false, "print the capture version and exit")
 	if err := flags.Parse(args); err != nil {
@@ -108,12 +112,16 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 		piped = strings.TrimSpace(string(raw)) != ""
 	}
 
+	// List mode takes no capture input, so the input rules below do not
+	// apply to it (rejecting input combined with -l is a separate ticket).
 	text := strings.Join(flags.Args(), " ")
-	if piped && text != "" {
-		return errors.New("arguments and stdin at once are ambiguous")
-	}
-	if !piped && text == "" {
-		return errors.New("empty capture")
+	if !list {
+		if piped && text != "" {
+			return errors.New("arguments and stdin at once are ambiguous")
+		}
+		if !piped && text == "" {
+			return errors.New("empty capture")
+		}
 	}
 
 	vault := getenv("CAPTURE_VAULT")
@@ -149,6 +157,9 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 	}
 
 	path := filepath.Join(dir, name+".md")
+	if list {
+		return listCaptures(path, stdout)
+	}
 	// Task entries render "- [ ] text" with no timestamp; note entries
 	// render "- HH:MM | text". Piped stdin yields one entry per non-empty
 	// trimmed line; the task flag applies to stdin-derived entries too.
@@ -188,4 +199,35 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 		err = cerr
 	}
 	return err
+}
+
+// noteMarker matches a Note line's "- HH:MM | " prefix, the shape capture
+// writes; prose bullets and template headings never carry it.
+var noteMarker = regexp.MustCompile(`^- \d{2}:\d{2} \| `)
+
+// isCaptureLine reports whether a Daily note line is a stored capture: a Note
+// or a Task checkbox (unchecked or checked).
+func isCaptureLine(line string) bool {
+	return noteMarker.MatchString(line) ||
+		strings.HasPrefix(line, "- [ ] ") ||
+		strings.HasPrefix(line, "- [x] ") ||
+		strings.HasPrefix(line, "- [X] ")
+}
+
+// listCaptures prints today's capture-shaped lines verbatim in file order.
+// A missing Daily note is an empty result: no output, no error, nothing created.
+func listCaptures(path string, stdout io.Writer) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(string(b), "\n"), "\n") {
+		if isCaptureLine(line) {
+			fmt.Fprintln(stdout, line)
+		}
+	}
+	return nil
 }
