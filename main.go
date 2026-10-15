@@ -34,6 +34,10 @@ Flags:
   -t, --todo
         record a task instead of a note (renders "- [ ] text"); without it the
         entry is a note (renders "- HH:MM | text").
+  -l, --list
+        print today's captures: each capture-shaped line of today's daily note
+        verbatim, in file order. An empty or missing day prints nothing and
+        exits 0. Takes no text, no stdin, and no -t.
   -version
         print the capture version and exit.
 
