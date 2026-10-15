@@ -85,7 +85,7 @@ Details:
 - Stdin and arguments cannot be combined — that is an error, as is an empty capture.
 - `-l` / `--list` prints today's captures: each capture-shaped line of today's daily note, verbatim in file order. An empty or missing day prints nothing and exits 0. It takes no text, no stdin, and no `-t`.
 - Flags come before the text; a dash-word after the first word is captured as text.
-- Success prints nothing and exits 0. Every error goes to stderr and exits 1.
+- A successful capture prints nothing and exits 0. Every error goes to stderr and exits 1.
 
 ## Example output
 

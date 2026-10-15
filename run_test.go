@@ -140,6 +140,15 @@ func TestRun(t *testing.T) {
 			wantFile:  "2026-10-14.md",
 			want:      "- 09:15 | buy milk -todo\n",
 		},
+		// Flags come before the text: a trailing -l is captured verbatim,
+		// so the run succeeds silently with no listing.
+		{
+			name:      "trailing -l after first positional stays text",
+			vaultMode: "dir",
+			args:      []string{"hello", "-l"},
+			wantFile:  "2026-10-14.md",
+			want:      "- 09:15 | hello -l\n",
+		},
 		{
 			name:      "-t with no text fails empty capture",
 			vaultMode: "dir",

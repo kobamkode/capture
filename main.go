@@ -17,6 +17,16 @@ import (
 // dailyFormat is the default Go time layout for the daily note filename.
 const dailyFormat = "2006-01-02"
 
+// The line shapes a capture renders, the single source for both the writer
+// (entry in run) and the list matcher below: a Note is notePrefix + HH:MM +
+// noteSep + text, a Task is taskPrefix + text. Edit these and both sides follow.
+const (
+	notePrefix     = "- "
+	noteSep        = " | "
+	noteTimeFormat = "15:04"
+	taskPrefix     = "- [ ] "
+)
+
 const helpText = `Usage: capture [flags] text...
        echo "line" | capture
 
@@ -173,9 +183,9 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 	// trimmed line; the task flag applies to stdin-derived entries too.
 	entry := func(s string) string {
 		if task {
-			return "- [ ] " + s + "\n"
+			return taskPrefix + s + "\n"
 		}
-		return "- " + now.Format("15:04") + " | " + s + "\n"
+		return notePrefix + now.Format(noteTimeFormat) + noteSep + s + "\n"
 	}
 	var buf strings.Builder
 	if piped {
@@ -209,15 +219,17 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 	return err
 }
 
-// noteMarker matches a Note line's "- HH:MM | " prefix, the shape capture
-// writes; prose bullets and template headings never carry it.
-var noteMarker = regexp.MustCompile(`^- \d{2}:\d{2} \| `)
+// noteMarker matches a Note line's prefix, built from the same notePrefix and
+// noteSep constants the writer uses; prose bullets and template headings
+// never carry it.
+var noteMarker = regexp.MustCompile("^" + regexp.QuoteMeta(notePrefix) + `\d{2}:\d{2}` + regexp.QuoteMeta(noteSep))
 
 // isCaptureLine reports whether a Daily note line is a stored capture: a Note
-// or a Task checkbox (unchecked or checked).
+// or a Task checkbox (unchecked or checked; capture itself only ever writes
+// taskPrefix, the checked states come back from vault edits).
 func isCaptureLine(line string) bool {
 	return noteMarker.MatchString(line) ||
-		strings.HasPrefix(line, "- [ ] ") ||
+		strings.HasPrefix(line, taskPrefix) ||
 		strings.HasPrefix(line, "- [x] ") ||
 		strings.HasPrefix(line, "- [X] ")
 }
