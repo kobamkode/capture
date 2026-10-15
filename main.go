@@ -112,10 +112,14 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 		piped = strings.TrimSpace(string(raw)) != ""
 	}
 
-	// List mode takes no capture input, so the input rules below do not
-	// apply to it (rejecting input combined with -l is a separate ticket).
+	// List mode accepts no capture input: a mistyped command must fail loudly
+	// instead of silently listing while dropping the input.
 	text := strings.Join(flags.Args(), " ")
-	if !list {
+	if list {
+		if text != "" || piped || task {
+			return errors.New("list mode accepts no capture input")
+		}
+	} else {
 		if piped && text != "" {
 			return errors.New("arguments and stdin at once are ambiguous")
 		}
