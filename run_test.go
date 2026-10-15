@@ -513,3 +513,170 @@ func TestRunAccumulatesAndRollsOver(t *testing.T) {
 		t.Errorf("2026-10-15.md = %q, want %q", dayTwoContent, wantDayTwo)
 	}
 }
+
+// -l prints today's Notes and Tasks verbatim in file order, filtering template
+// headings, prose and blank lines, and never touches the Daily note.
+// --list is the same flag.
+func TestRunListPrintsCaptureLinesOnly(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+	path := filepath.Join(vault, "2026-10-14.md")
+	content := "# Daily\n\nsome prose\n\n- 08:00 | earlier note\n- [ ] open the door\n" +
+		"- just a bullet\n- [x] done thing\n- [X] also done\n- 09:15 | later thought\n\n## Tasks\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"-l"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(-l): %v", err)
+	}
+	want := "- 08:00 | earlier note\n- [ ] open the door\n- [x] done thing\n" +
+		"- [X] also done\n- 09:15 | later thought\n"
+	if stdout.String() != want {
+		t.Errorf("stdout = %q, want %q", stdout.String(), want)
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("stderr = %q, want empty", stderr.String())
+	}
+
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) || after.Size() != before.Size() {
+		t.Errorf("listing touched the Daily note: mtime/size changed")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != content {
+		t.Errorf("listing modified the Daily note: %q", got)
+	}
+
+	stdout.Reset()
+	if err := run([]string{"--list"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(--list): %v", err)
+	}
+	if stdout.String() != want {
+		t.Errorf("--list stdout = %q, want %q", stdout.String(), want)
+	}
+}
+
+// A missing Daily note, or one holding no capture lines, is a normal empty
+// result: no output, exit 0, nothing created or changed anywhere.
+func TestRunListEmptyResults(t *testing.T) {
+	cases := []struct {
+		name string
+		note string // "" = no Daily note exists
+	}{
+		{"missing daily note", ""},
+		{"daily note without capture lines", "# Daily\n\nsome prose\n\n- bring snacks\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vault := t.TempDir()
+			getenv := func(key string) string {
+				if key == "CAPTURE_VAULT" {
+					return vault
+				}
+				return ""
+			}
+			path := filepath.Join(vault, "2026-10-14.md")
+			if tc.note != "" {
+				if err := os.WriteFile(path, []byte(tc.note), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var stdout, stderr bytes.Buffer
+			if err := run([]string{"-l"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+				t.Fatalf("run(-l): %v", err)
+			}
+			if stdout.Len() != 0 || stderr.Len() != 0 {
+				t.Errorf("want empty output, got stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+
+			entries, err := os.ReadDir(vault)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantEntries := 1
+			if tc.note == "" {
+				wantEntries = 0
+			}
+			if len(entries) != wantEntries {
+				t.Errorf("vault holds %d entries (%v), want %d: nothing may be created", len(entries), entries, wantEntries)
+			}
+			if tc.note != "" {
+				got, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(got) != tc.note {
+					t.Errorf("Daily note changed: %q", got)
+				}
+			}
+		})
+	}
+}
+
+// The listed file honours CAPTURE_DAILY_DIR and CAPTURE_DAILY_FORMAT: it is
+// the file a capture appends to, and a capture made just before listing on the
+// same clock shows up in the output.
+func TestRunListHonoursCustomDailyLayout(t *testing.T) {
+	vault := t.TempDir()
+	if err := os.Mkdir(filepath.Join(vault, "Journal"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	getenv := func(key string) string {
+		switch key {
+		case "CAPTURE_VAULT":
+			return vault
+		case "CAPTURE_DAILY_DIR":
+			return "Journal"
+		case "CAPTURE_DAILY_FORMAT":
+			return "02-01-2006"
+		}
+		return ""
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"hello", "world"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	stdout.Reset()
+	if err := run([]string{"-l"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(-l): %v", err)
+	}
+	want := "- 09:15 | hello world\n"
+	if stdout.String() != want {
+		t.Errorf("stdout = %q, want %q", stdout.String(), want)
+	}
+
+	entries, err := os.ReadDir(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "Journal" {
+		t.Errorf("vault entries = %v, want only the Journal folder", entries)
+	}
+	got, err := os.ReadFile(filepath.Join(vault, "Journal", "14-10-2026.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Errorf("Journal/14-10-2026.md = %q, want %q", got, want)
+	}
+}
