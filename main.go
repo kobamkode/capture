@@ -31,7 +31,8 @@ const helpText = `Usage: capture [flags] text...
        echo "line" | capture
 
 Appends each capture as an entry to today's daily note in an Obsidian vault.
-Success is silent (exit 0); errors go to stderr (exit 1).
+A successful capture prints nothing (exit 0); -l writes the listing to stdout;
+errors go to stderr (exit 1).
 
 Input rules:
   Arguments: all remaining words are joined with single spaces into one entry.
