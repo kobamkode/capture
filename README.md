@@ -29,7 +29,7 @@ Confirm what you have:
 
 ```console
 $ capture --version
-capture v0.1.0
+capture v0.2.0
 ```
 
 ## Update
@@ -118,4 +118,4 @@ go test ./...
 
 Tests drive a single `run` seam with an injected clock and temp vault directories, so date rollover and timestamps assert deterministically.
 
-Releases are git tags: `go install github.com/kobamkode/capture@latest` resolves to the newest tag, and `--version` reports it because `go install pkg@vX.Y.Z` embeds the module version in the binary. Tag with `git tag v0.2.0 && git push --tags`; a build without a tag reports `devel`.
+Releases are git tags: `go install github.com/kobamkode/capture@latest` resolves to the newest tag, and `--version` reports it because `go install pkg@vX.Y.Z` embeds the module version in the binary. Tag with `git tag vX.Y.Z && git push --tags`; a build without a tag reports `devel`.
