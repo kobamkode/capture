@@ -218,6 +218,16 @@ func TestRun(t *testing.T) {
 			args:        []string{"hello"},
 			wantErr:     "CAPTURE_DAILY_FORMAT",
 		},
+		{
+			name:      "-l rejects text and leaves the existing Daily note untouched",
+			vaultMode: "dir",
+			args:      []string{"-l", "some", "text"},
+			preExisting: func() *string {
+				s := "- 08:00 | earlier\n"
+				return &s
+			}(),
+			wantErr: "no capture input",
+		},
 	}
 
 	for _, tc := range cases {
@@ -277,6 +287,15 @@ func TestRun(t *testing.T) {
 					if _, statErr := os.Stat(filepath.Join(vault, tc.dailyDir)); !os.IsNotExist(statErr) {
 						t.Errorf("folder %s must not be created on failure", tc.dailyDir)
 					}
+				}
+				// No failing invocation may create or modify the Daily note.
+				if tc.preExisting != nil {
+					got, readErr := os.ReadFile(filepath.Join(vault, "2026-10-14.md"))
+					if readErr != nil || string(got) != *tc.preExisting {
+						t.Errorf("Daily note must be unchanged on failure, got %q (err %v)", got, readErr)
+					}
+				} else if _, statErr := os.Stat(filepath.Join(vault, "2026-10-14.md")); statErr == nil {
+					t.Errorf("no failing invocation may create the Daily note")
 				}
 				return
 			}
@@ -678,5 +697,109 @@ func TestRunListHonoursCustomDailyLayout(t *testing.T) {
 	}
 	if string(got) != want {
 		t.Errorf("Journal/14-10-2026.md = %q, want %q", got, want)
+	}
+}
+
+// List mode accepts no capture input: under -l and --list alike, positional
+// text, piped stdin and the task flag each fail through run's error return
+// (stderr and exit 1 via main) and never create the Daily note.
+func TestRunListRejectsCaptureInput(t *testing.T) {
+	cases := []struct {
+		name  string
+		args  []string // args after the list flag
+		stdin string
+	}{
+		{"positional text", []string{"some", "text"}, ""},
+		{"piped stdin", nil, "ideas\n"},
+		{"task flag -t", []string{"-t"}, ""},
+		{"task flag --todo", []string{"--todo"}, ""},
+		{"args and stdin together", []string{"some", "text"}, "ideas\n"},
+	}
+	for _, listFlag := range []string{"-l", "--list"} {
+		for _, tc := range cases {
+			t.Run(listFlag+" with "+tc.name, func(t *testing.T) {
+				vault := t.TempDir()
+				getenv := func(key string) string {
+					if key == "CAPTURE_VAULT" {
+						return vault
+					}
+					return ""
+				}
+				args := append([]string{listFlag}, tc.args...)
+
+				var stdout, stderr bytes.Buffer
+				err := run(args, getenv, testClock, strings.NewReader(tc.stdin), &stdout, &stderr)
+				if err == nil {
+					t.Fatalf("run(%v) returned nil, want error", args)
+				}
+				if !strings.Contains(err.Error(), "no capture input") {
+					t.Errorf("error = %q, want it to name the rejected capture input", err.Error())
+				}
+				if stdout.Len() != 0 {
+					t.Errorf("stdout = %q, want empty", stdout.String())
+				}
+				if _, statErr := os.Stat(filepath.Join(vault, "2026-10-14.md")); !os.IsNotExist(statErr) {
+					t.Error("a failing list invocation must not create the Daily note")
+				}
+			})
+		}
+	}
+}
+
+// Vault and daily-note configuration errors surface under -l with
+// byte-identical messages to a capture, and neither leg creates the Daily note.
+func TestRunListConfigErrorsMatchCapture(t *testing.T) {
+	cases := []struct {
+		name        string
+		makeVault   func(t *testing.T) string // CAPTURE_VAULT value
+		dailyDir    string
+		dailyFormat string
+	}{
+		{"unset CAPTURE_VAULT", func(*testing.T) string { return "" }, "", ""},
+		{"CAPTURE_VAULT not a directory", func(t *testing.T) string {
+			p := filepath.Join(t.TempDir(), "not-a-dir")
+			if err := os.WriteFile(p, []byte("x"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}, "", ""},
+		{"missing CAPTURE_DAILY_DIR", func(t *testing.T) string { return t.TempDir() }, "Missing", ""},
+		{"invalid CAPTURE_DAILY_FORMAT", func(t *testing.T) string { return t.TempDir() }, "", "%Y-%m-%d"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vault := tc.makeVault(t)
+			getenv := func(key string) string {
+				switch key {
+				case "CAPTURE_VAULT":
+					return vault
+				case "CAPTURE_DAILY_DIR":
+					return tc.dailyDir
+				case "CAPTURE_DAILY_FORMAT":
+					return tc.dailyFormat
+				}
+				return ""
+			}
+
+			var captureOut, captureErr, listOut, listErr bytes.Buffer
+			errCapture := run([]string{"hello"}, getenv, testClock, strings.NewReader(""), &captureOut, &captureErr)
+			errList := run([]string{"-l"}, getenv, testClock, strings.NewReader(""), &listOut, &listErr)
+
+			if errCapture == nil || errList == nil {
+				t.Fatalf("want errors from both legs, got capture=%v list=%v", errCapture, errList)
+			}
+			if errList.Error() != errCapture.Error() {
+				t.Errorf("list error %q != capture error %q", errList.Error(), errCapture.Error())
+			}
+			if info, statErr := os.Stat(vault); statErr == nil && info.IsDir() {
+				entries, readErr := os.ReadDir(vault)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if len(entries) != 0 {
+					t.Errorf("failing invocations created %v in the vault", entries)
+				}
+			}
+		})
 	}
 }
