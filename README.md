@@ -75,6 +75,8 @@ capture -- -todo list        # text starting with a dash
 printf 'a\nb\n' | capture    # one entry per non-empty line
 capture -l                   # print today's captures
 capture --list               # same as -l
+capture -l -w                # print the past week's captures under day headings
+capture --list --week        # same as -l -w
 capture --version            # print version and exit
 ```
 
@@ -84,6 +86,7 @@ Details:
 - Note entries carry a 24-hour local timestamp; task entries are unchecked checkboxes without one.
 - Stdin and arguments cannot be combined — that is an error, as is an empty capture.
 - `-l` / `--list` prints today's captures: each capture-shaped line of today's daily note, verbatim in file order. An empty or missing day prints nothing and exits 0. It takes no text, no stdin, and no `-t`.
+- `-w` / `--week` extends `-l` to the past week: the last seven daily notes, oldest day first, each day under a `## YYYY-MM-DD` heading. Days with no captures are skipped. It requires `-l` and accepts no text, no stdin, and no `-t`.
 - Flags come before the text; a dash-word after the first word is captured as text.
 - A successful capture prints nothing and exits 0. Every error goes to stderr and exits 1.
 
@@ -108,6 +111,21 @@ On a day with nothing captured the listing is empty and the exit code is 0:
 
 ```console
 $ capture -l
+```
+
+The week listing adds a heading per day, oldest day first:
+
+```console
+$ capture -l -w
+## 2026-10-08
+- [ ] old task
+
+## 2026-10-13
+- 08:00 | yesterday note
+- [ ] dentist tomorrow
+
+## 2026-10-14
+- 09:15 | today note
 ```
 
 ## Development

@@ -49,6 +49,11 @@ Flags:
         print today's captures: each capture-shaped line of today's daily note
         verbatim, in file order. An empty or missing day prints nothing and
         exits 0. Takes no text, no stdin, and no -t.
+  -w, --week
+        with -l, print the past week's captures instead of today's: the last
+        seven daily notes, oldest day first, each day under a "## YYYY-MM-DD"
+        heading; days without captures are skipped. Requires -l and, like -l,
+        takes no text, no stdin, and no -t.
   -version
         print the capture version and exit.
 
@@ -90,6 +95,9 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 	var list bool
 	flags.BoolVar(&list, "l", false, "print today's captures and exit")
 	flags.BoolVar(&list, "list", false, "print today's captures and exit")
+	var week bool
+	flags.BoolVar(&week, "w", false, "with --list, print the past week's captures and exit")
+	flags.BoolVar(&week, "week", false, "with --list, print the past week's captures and exit")
 	var showVersion bool
 	flags.BoolVar(&showVersion, "version", false, "print the capture version and exit")
 	if err := flags.Parse(args); err != nil {
@@ -104,6 +112,12 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 	if showVersion {
 		fmt.Fprintf(stdout, "capture %s\n", version())
 		return nil
+	}
+
+	// Week is a listing modifier: alone it is a mistyped command, so fail
+	// loudly instead of capturing "-w text".
+	if week && !list {
+		return errors.New("week mode requires -l")
 	}
 
 	// A terminal stdin must not be read: io.ReadAll would block until EOF
@@ -177,6 +191,9 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 
 	path := filepath.Join(dir, name+".md")
 	if list {
+		if week {
+			return listWeek(dir, layout, now, stdout)
+		}
 		return listCaptures(path, stdout)
 	}
 	// Task entries render "- [ ] text" with no timestamp; note entries
@@ -235,18 +252,55 @@ func isCaptureLine(line string) bool {
 		strings.HasPrefix(line, "- [X] ")
 }
 
-// listCaptures prints today's capture-shaped lines verbatim in file order.
-// A missing Daily note is an empty result: no output, no error, nothing created.
-func listCaptures(path string, stdout io.Writer) error {
+// captureLines returns the capture-shaped lines of one Daily note, verbatim
+// in file order. A missing Daily note is an empty result: no error, nothing
+// created.
+func captureLines(path string) ([]string, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil
+			return nil, nil
 		}
-		return err
+		return nil, err
 	}
+	var lines []string
 	for _, line := range strings.Split(strings.TrimSuffix(string(b), "\n"), "\n") {
 		if isCaptureLine(line) {
+			lines = append(lines, line)
+		}
+	}
+	return lines, nil
+}
+
+// listCaptures prints today's capture-shaped lines verbatim in file order.
+// A missing Daily note is an empty result: no output, no error, nothing created.
+func listCaptures(path string, stdout io.Writer) error {
+	lines, err := captureLines(path)
+	if err != nil {
+		return err
+	}
+	for _, line := range lines {
+		fmt.Fprintln(stdout, line)
+	}
+	return nil
+}
+
+// listWeek prints the past seven days' captures, oldest day first, each day
+// under a "## YYYY-MM-DD" heading; days without captures are skipped, so a
+// missing Daily note is an empty result. Filenames follow the configured
+// daily layout, headings use the canonical date.
+func listWeek(dir, layout string, now time.Time, stdout io.Writer) error {
+	for i := 6; i >= 0; i-- {
+		day := now.AddDate(0, 0, -i)
+		lines, err := captureLines(filepath.Join(dir, day.Format(layout)+".md"))
+		if err != nil {
+			return err
+		}
+		if len(lines) == 0 {
+			continue
+		}
+		fmt.Fprintf(stdout, "## %s\n", day.Format(dailyFormat))
+		for _, line := range lines {
 			fmt.Fprintln(stdout, line)
 		}
 	}

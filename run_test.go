@@ -448,7 +448,7 @@ func TestRunHelpDocumentsFlagsAndEnvVars(t *testing.T) {
 		t.Fatal("--help wrote nothing to stdout")
 	}
 	for _, want := range []string{
-		"-t", "--todo", "-l, --list", "-version",
+		"-t", "--todo", "-l, --list", "-w, --week", "-version",
 		"--", "stdin",
 		"CAPTURE_VAULT", "CAPTURE_DAILY_DIR", "CAPTURE_DAILY_FORMAT",
 		"2006-01-02",
@@ -706,6 +706,206 @@ func TestRunListHonoursCustomDailyLayout(t *testing.T) {
 	}
 	if string(got) != want {
 		t.Errorf("Journal/14-10-2026.md = %q, want %q", got, want)
+	}
+}
+
+// Week listing spans the last seven daily notes, oldest first, each under a
+// "## YYYY-MM-DD" heading; days without captures (or without a file) print
+// nothing, a day seven back is the far edge included, and anything older is
+// excluded. Nothing is created or changed.
+func TestRunWeekListSpansSevenDaysOldestFirst(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+	// testClock holds 2026-10-14, so the week covers 08..14 and 07 is out.
+	files := map[string]string{
+		"2026-10-08.md": "# Daily\n\n- [ ] old task\n- [x] later done\n",
+		"2026-10-10.md": "some prose\n\n- 10:00 | mid note\n- 10:05 | second thought\n",
+		"2026-10-13.md": "- 08:00 | yesterday note\n- [ ] yesterday task\n",
+		"2026-10-14.md": "- 09:15 | today note\n",
+		"2026-10-07.md": "- 12:00 | too old, excluded\n",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(vault, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := make(map[string]string)
+	for name, content := range files {
+		before[name] = content
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"-l", "-w"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(-l -w): %v", err)
+	}
+	want := "## 2026-10-08\n- [ ] old task\n- [x] later done\n" +
+		"## 2026-10-10\n- 10:00 | mid note\n- 10:05 | second thought\n" +
+		"## 2026-10-13\n- 08:00 | yesterday note\n- [ ] yesterday task\n" +
+		"## 2026-10-14\n- 09:15 | today note\n"
+	if stdout.String() != want {
+		t.Errorf("stdout = %q, want %q", stdout.String(), want)
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("stderr = %q, want empty", stderr.String())
+	}
+
+	for name, content := range files {
+		got, err := os.ReadFile(filepath.Join(vault, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != content {
+			t.Errorf("%s changed: %q, want %q", name, got, content)
+		}
+	}
+
+	// The long forms resolve to the same run.
+	stdout.Reset()
+	if err := run([]string{"--list", "--week"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(--list --week): %v", err)
+	}
+	if stdout.String() != want {
+		t.Errorf("--list --week stdout = %q, want %q", stdout.String(), want)
+	}
+}
+
+// A week with no captures anywhere — no files at all, or only prose-only
+// Daily notes — prints nothing, exits 0, and creates nothing.
+func TestRunWeekListEmptyResults(t *testing.T) {
+	cases := []struct {
+		name  string
+		files map[string]string
+	}{
+		{"no daily notes at all", nil},
+		{"daily notes without capture lines", map[string]string{
+			"2026-10-10.md": "# Daily\n\nsome prose\n",
+			"2026-10-12.md": "## Tasks\n\n- bring snacks\n",
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vault := t.TempDir()
+			getenv := func(key string) string {
+				if key == "CAPTURE_VAULT" {
+					return vault
+				}
+				return ""
+			}
+			for name, content := range tc.files {
+				if err := os.WriteFile(filepath.Join(vault, name), []byte(content), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var stdout, stderr bytes.Buffer
+			if err := run([]string{"-l", "-w"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+				t.Fatalf("run(-l -w): %v", err)
+			}
+			if stdout.Len() != 0 || stderr.Len() != 0 {
+				t.Errorf("want empty output, got stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+
+			entries, err := os.ReadDir(vault)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != len(tc.files) {
+				t.Errorf("vault holds %d entries (%v), want %d: nothing may be created", len(entries), entries, len(tc.files))
+			}
+		})
+	}
+}
+
+// The week listing honours CAPTURE_DAILY_DIR and CAPTURE_DAILY_FORMAT: it
+// reads the files a capture appends to, across the whole range.
+func TestRunWeekHonoursCustomDailyLayout(t *testing.T) {
+	vault := t.TempDir()
+	if err := os.Mkdir(filepath.Join(vault, "Journal"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	getenv := func(key string) string {
+		switch key {
+		case "CAPTURE_VAULT":
+			return vault
+		case "CAPTURE_DAILY_DIR":
+			return "Journal"
+		case "CAPTURE_DAILY_FORMAT":
+			return "02-01-2006"
+		}
+		return ""
+	}
+	for name, content := range map[string]string{
+		"08-10-2026.md": "- 10:00 | week-old note\n",
+		"13-10-2026.md": "- 08:00 | yesterday note\n",
+		"14-10-2026.md": "- 09:15 | today note\n",
+		"07-10-2026.md": "- 12:00 | too old, excluded\n",
+	} {
+		if err := os.WriteFile(filepath.Join(vault, "Journal", name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"-l", "-w"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(-l -w): %v", err)
+	}
+	want := "## 2026-10-08\n- 10:00 | week-old note\n" +
+		"## 2026-10-13\n- 08:00 | yesterday note\n" +
+		"## 2026-10-14\n- 09:15 | today note\n"
+	if stdout.String() != want {
+		t.Errorf("stdout = %q, want %q", stdout.String(), want)
+	}
+	if strings.Contains(stdout.String(), "too old") {
+		t.Errorf("stdout includes captures older than the week: %q", stdout.String())
+	}
+}
+
+// Week is a modifier of list mode: without -l it fails loudly and creates
+// nothing; with it, the usual list rules hold and capture input is rejected.
+func TestRunWeekModeGuards(t *testing.T) {
+	cases := []struct {
+		name  string
+		args  []string
+		stdin string
+		want  string // substring of the expected error
+	}{
+		{"-w alone", []string{"-w"}, "", "requires -l"},
+		{"--week alone", []string{"--week"}, "", "requires -l"},
+		{"-w positional text", []string{"-w", "some", "text"}, "", "requires -l"},
+		{"-l -w with text", []string{"-l", "-w", "some", "text"}, "", "no capture input"},
+		{"-l -w with stdin", []string{"-l", "-w"}, "ideas\n", "no capture input"},
+		{"-l -w with -t", []string{"-l", "-w", "-t"}, "", "no capture input"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vault := t.TempDir()
+			getenv := func(key string) string {
+				if key == "CAPTURE_VAULT" {
+					return vault
+				}
+				return ""
+			}
+
+			var stdout, stderr bytes.Buffer
+			err := run(tc.args, getenv, testClock, strings.NewReader(tc.stdin), &stdout, &stderr)
+			if err == nil {
+				t.Fatalf("run(%v) returned nil, want error", tc.args)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), tc.want)
+			}
+			if stdout.Len() != 0 {
+				t.Errorf("stdout = %q, want empty", stdout.String())
+			}
+			if _, statErr := os.Stat(filepath.Join(vault, "2026-10-14.md")); !os.IsNotExist(statErr) {
+				t.Error("a failing week invocation must not create the Daily note")
+			}
+		})
 	}
 }
 
