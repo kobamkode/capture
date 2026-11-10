@@ -28,7 +28,3 @@ Used by `/wayfinder`:
 - **Frontier**: `bd ready --json`, unblocked and unclaimed.
 - **Claim**: `bd ready --claim --json` (atomic, lease-backed) or `bd update <id> --status in_progress` when the id is already known.
 - **Resolve**: post the answer with `bd comment <id> --file answer.md`, then `bd close <id>`; append the one-line gist + id to the map's Decisions-so-far.
-
-## Consuming skills
-
-`/implement-spec-workmux` drives this tracker directly: claims via `bd ready --claim`, merges each worker branch, closes only after the merge lands.
