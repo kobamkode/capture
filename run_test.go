@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -449,6 +450,7 @@ func TestRunHelpDocumentsFlagsAndEnvVars(t *testing.T) {
 	}
 	for _, want := range []string{
 		"-t", "--todo", "-l, --list", "-w, --week", "-version",
+		"open",
 		"--", "stdin",
 		"CAPTURE_VAULT", "CAPTURE_DAILY_DIR", "CAPTURE_DAILY_FORMAT",
 		"2006-01-02",
@@ -1010,5 +1012,281 @@ func TestRunListConfigErrorsMatchCapture(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// recordingOpener captures the URI run passes to the system opener.
+type recordingOpener struct {
+	urls []string
+	err  error
+}
+
+func (o *recordingOpener) open(rawURL string) error {
+	o.urls = append(o.urls, rawURL)
+	return o.err
+}
+
+func expectedObsidianURL(t *testing.T, path string) string {
+	t.Helper()
+	q := url.Values{}
+	q.Set("path", path)
+	return "obsidian://open?" + q.Encode()
+}
+
+// `capture open` opens today's Daily note in Obsidian, creating an empty note
+// first, and never reads a terminal stdin or writes output.
+func TestRunOpenLaunchesTodaysNote(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+	stdin := newStatReader(os.ModeCharDevice, "")
+	opener := &recordingOpener{}
+
+	var stdout, stderr bytes.Buffer
+	if err := runWithOpener([]string{"open"}, getenv, testClock, stdin, &stdout, &stderr, opener.open); err != nil {
+		t.Fatalf("run(open): %v", err)
+	}
+	if stdin.read {
+		t.Error("open read a terminal stdin; it must never block waiting for EOF")
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Errorf("open must be silent, got stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+
+	path := filepath.Join(vault, "2026-10-14.md")
+	wantURL := expectedObsidianURL(t, path)
+	if len(opener.urls) != 1 || opener.urls[0] != wantURL {
+		t.Errorf("opened %v, want exactly [%s]", opener.urls, wantURL)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("open must create the missing Daily note: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("new Daily note = %q, want empty", got)
+	}
+}
+
+// Open resolves the same Daily note as a capture: CAPTURE_DAILY_DIR and
+// CAPTURE_DAILY_FORMAT both apply, and an existing note is left untouched.
+func TestRunOpenHonoursLayoutAndPreservesContent(t *testing.T) {
+	vault := t.TempDir()
+	if err := os.Mkdir(filepath.Join(vault, "Journal"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(vault, "Journal", "14-10-2026.md")
+	content := "# Daily\n\n- 08:00 | earlier\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	getenv := func(key string) string {
+		switch key {
+		case "CAPTURE_VAULT":
+			return vault
+		case "CAPTURE_DAILY_DIR":
+			return "Journal"
+		case "CAPTURE_DAILY_FORMAT":
+			return "02-01-2006"
+		}
+		return ""
+	}
+	opener := &recordingOpener{}
+
+	var stdout, stderr bytes.Buffer
+	if err := runWithOpener([]string{"open"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr, opener.open); err != nil {
+		t.Fatalf("run(open): %v", err)
+	}
+	wantURL := expectedObsidianURL(t, path)
+	if len(opener.urls) != 1 || opener.urls[0] != wantURL {
+		t.Errorf("opened %v, want exactly [%s]", opener.urls, wantURL)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != content {
+		t.Errorf("open modified the Daily note: %q, want %q", got, content)
+	}
+}
+
+// Open is a command, not a capture: flags, text and piped stdin are all
+// rejected loudly and nothing is created or launched.
+func TestRunOpenRejectsCaptureInput(t *testing.T) {
+	cases := []struct {
+		name  string
+		args  []string
+		stdin string
+	}{
+		{"positional text", []string{"open", "some", "text"}, ""},
+		{"task flag", []string{"open", "-t"}, ""},
+		{"list flag", []string{"open", "-l"}, ""},
+		{"week flag", []string{"open", "-w"}, ""},
+		{"piped stdin", []string{"open"}, "ideas\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vault := t.TempDir()
+			getenv := func(key string) string {
+				if key == "CAPTURE_VAULT" {
+					return vault
+				}
+				return ""
+			}
+			opener := &recordingOpener{}
+
+			var stdout, stderr bytes.Buffer
+			err := runWithOpener(tc.args, getenv, testClock, strings.NewReader(tc.stdin), &stdout, &stderr, opener.open)
+			if err == nil {
+				t.Fatalf("run(%v) returned nil, want error", tc.args)
+			}
+			if !strings.Contains(err.Error(), "open takes no") {
+				t.Errorf("error = %q, want it to reject open input", err.Error())
+			}
+			if len(opener.urls) != 0 {
+				t.Errorf("a failing open launched %v", opener.urls)
+			}
+			if stdout.Len() != 0 {
+				t.Errorf("stdout = %q, want empty", stdout.String())
+			}
+			if _, statErr := os.Stat(filepath.Join(vault, "2026-10-14.md")); !os.IsNotExist(statErr) {
+				t.Error("a failing open must not create the Daily note")
+			}
+		})
+	}
+}
+
+// The word "open" is still capturable through the documented escape hatches,
+// and a flag before it keeps it plain text.
+func TestRunOpenWordRemainsCapturable(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"-- separator", []string{"--", "open"}, "- 09:15 | open\n"},
+		{"task flag before", []string{"-t", "open"}, "- [ ] open\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vault := t.TempDir()
+			getenv := func(key string) string {
+				if key == "CAPTURE_VAULT" {
+					return vault
+				}
+				return ""
+			}
+			var stdout, stderr bytes.Buffer
+			if err := run(tc.args, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+				t.Fatalf("run(%v): %v", tc.args, err)
+			}
+			got, err := os.ReadFile(filepath.Join(vault, "2026-10-14.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("2026-10-14.md = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A failing opener surfaces its error instead of being swallowed.
+func TestRunOpenReportsLauncherError(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+	opener := &recordingOpener{err: errors.New("no handler")}
+
+	var stdout, stderr bytes.Buffer
+	err := runWithOpener([]string{"open"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr, opener.open)
+	if err == nil || !strings.Contains(err.Error(), "no handler") {
+		t.Fatalf("error = %v, want the launcher error", err)
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("stdout = %q, want empty", stdout.String())
+	}
+}
+
+// Open surfaces the same configuration errors as a capture and creates
+// nothing when the vault or daily layout is wrong.
+func TestRunOpenConfigErrorsMatchCapture(t *testing.T) {
+	cases := []struct {
+		name        string
+		makeVault   func(t *testing.T) string
+		dailyDir    string
+		dailyFormat string
+	}{
+		{"unset CAPTURE_VAULT", func(*testing.T) string { return "" }, "", ""},
+		{"CAPTURE_VAULT not a directory", func(t *testing.T) string {
+			p := filepath.Join(t.TempDir(), "not-a-dir")
+			if err := os.WriteFile(p, []byte("x"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}, "", ""},
+		{"missing CAPTURE_DAILY_DIR", func(t *testing.T) string { return t.TempDir() }, "Missing", ""},
+		{"invalid CAPTURE_DAILY_FORMAT", func(t *testing.T) string { return t.TempDir() }, "", "%Y-%m-%d"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vault := tc.makeVault(t)
+			getenv := func(key string) string {
+				switch key {
+				case "CAPTURE_VAULT":
+					return vault
+				case "CAPTURE_DAILY_DIR":
+					return tc.dailyDir
+				case "CAPTURE_DAILY_FORMAT":
+					return tc.dailyFormat
+				}
+				return ""
+			}
+			opener := &recordingOpener{}
+
+			var captureOut, captureErr, openOut, openErr bytes.Buffer
+			errCapture := run([]string{"hello"}, getenv, testClock, strings.NewReader(""), &captureOut, &captureErr)
+			errOpen := runWithOpener([]string{"open"}, getenv, testClock, strings.NewReader(""), &openOut, &openErr, opener.open)
+
+			if errCapture == nil || errOpen == nil {
+				t.Fatalf("want errors from both legs, got capture=%v open=%v", errCapture, errOpen)
+			}
+			if errOpen.Error() != errCapture.Error() {
+				t.Errorf("open error %q != capture error %q", errOpen.Error(), errCapture.Error())
+			}
+			if len(opener.urls) != 0 {
+				t.Errorf("a failing open launched %v", opener.urls)
+			}
+			if info, statErr := os.Stat(vault); statErr == nil && info.IsDir() {
+				entries, readErr := os.ReadDir(vault)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if len(entries) != 0 {
+					t.Errorf("failing invocations created %v in the vault", entries)
+				}
+			}
+		})
+	}
+}
+
+// The URI always carries an absolute path, and spaces are encoded.
+func TestObsidianURLIsAbsoluteAndEncoded(t *testing.T) {
+	rel := filepath.Join("relative", "daily note", "2026-10-14.md")
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := obsidianURL(rel)
+	want := expectedObsidianURL(t, filepath.Join(cwd, rel))
+	if got != want {
+		t.Errorf("obsidianURL(%q) = %q, want %q", rel, got, want)
 	}
 }

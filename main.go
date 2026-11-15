@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -28,11 +31,18 @@ const (
 )
 
 const helpText = `Usage: capture [flags] text...
+       capture open
        echo "line" | capture
 
 Appends each capture as an entry to today's daily note in an Obsidian vault.
 A successful capture prints nothing (exit 0); -l writes the listing to stdout;
 errors go to stderr (exit 1).
+
+Commands:
+  open
+        open today's daily note in Obsidian, creating it when missing.
+        Takes no flags, text, or stdin. To capture the word itself, use the
+        -- separator: capture -- open.
 
 Input rules:
   Arguments: all remaining words are joined with single spaces into one entry.
@@ -76,6 +86,12 @@ func main() {
 	}
 }
 
+// run is the production entry point; tests needing to intercept the Obsidian
+// launch call runWithOpener directly.
+func run(args []string, getenv func(string) string, now time.Time, stdin io.Reader, stdout, stderr io.Writer) error {
+	return runWithOpener(args, getenv, now, stdin, stdout, stderr, openURL)
+}
+
 // version reports the module version baked in by `go install pkg@vX.Y.Z`,
 // so git tags drive releases with no constant to bump. Local builds have
 // no module version and report "devel".
@@ -86,7 +102,15 @@ func version() string {
 	return "devel"
 }
 
-func run(args []string, getenv func(string) string, now time.Time, stdin io.Reader, stdout, stderr io.Writer) error {
+func runWithOpener(args []string, getenv func(string) string, now time.Time, stdin io.Reader, stdout, stderr io.Writer, open func(string) error) error {
+	// `capture open` is a command, not a capture of the word "open". It must be
+	// the first argument, so `capture -t open` and `capture -- open` still
+	// capture the text.
+	openMode := len(args) > 0 && args[0] == "open"
+	if openMode {
+		args = args[1:]
+	}
+
 	flags := flag.NewFlagSet("capture", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	var task bool
@@ -114,9 +138,15 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 		return nil
 	}
 
-	// Week is a listing modifier: alone it is a mistyped command, so fail
-	// loudly instead of capturing "-w text".
-	if week && !list {
+	if openMode {
+		// Open takes no configuration beyond the environment: reject flags and
+		// text before reading stdin or touching the vault.
+		if task || list || week || len(flags.Args()) > 0 {
+			return errors.New("open takes no flags, text, or stdin")
+		}
+	} else if week && !list {
+		// Week is a listing modifier: alone it is a mistyped command, so fail
+		// loudly instead of capturing "-w text".
 		return errors.New("week mode requires -l")
 	}
 
@@ -141,10 +171,14 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 		piped = strings.TrimSpace(string(raw)) != ""
 	}
 
-	// List mode accepts no capture input: a mistyped command must fail loudly
-	// instead of silently listing while dropping the input.
+	// List and open modes accept no capture input: a mistyped command must fail
+	// loudly instead of silently dropping the input.
 	text := strings.Join(flags.Args(), " ")
-	if list {
+	if openMode {
+		if piped {
+			return errors.New("open takes no flags, text, or stdin")
+		}
+	} else if list {
 		if text != "" || piped || task {
 			return errors.New("list mode accepts no capture input")
 		}
@@ -190,6 +224,12 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 	}
 
 	path := filepath.Join(dir, name+".md")
+	if openMode {
+		if err := ensureNote(path); err != nil {
+			return err
+		}
+		return open(obsidianURL(path))
+	}
 	if list {
 		if week {
 			return listWeek(dir, layout, now, stdout)
@@ -235,6 +275,53 @@ func run(args []string, getenv func(string) string, now time.Time, stdin io.Read
 		err = cerr
 	}
 	return err
+}
+
+// ensureNote creates an empty Daily note when it is missing, so opening the day
+// never depends on Obsidian inventing the file. Existing notes are untouched.
+func ensureNote(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+// obsidianURL builds the Obsidian URI that opens path. The absolute path form
+// sidesteps vault display-name mismatches, and url.Values encodes spaces and
+// non-ASCII characters.
+func obsidianURL(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	q := url.Values{}
+	q.Set("path", path)
+	return "obsidian://open?" + q.Encode()
+}
+
+// openURL hands the URI to the desktop's registered obsidian:// handler.
+func openURL(rawURL string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", rawURL)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", rawURL)
+	default:
+		cmd = exec.Command("xdg-open", rawURL)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		if msg := strings.TrimSpace(string(out)); msg != "" {
+			return fmt.Errorf("opening Obsidian: %w: %s", err, msg)
+		}
+		return fmt.Errorf("opening Obsidian: %w", err)
+	}
+	return nil
 }
 
 // noteMarker matches a Note line's prefix, built from the same notePrefix and

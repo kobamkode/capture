@@ -6,9 +6,10 @@ Append thoughts and tasks to your Obsidian daily note straight from the shell.
 $ capture i think i need to learn math
 $ capture -t go to dentist
 $ cat ideas.txt | capture
+$ capture open
 ```
 
-Each run appends to today's daily note in your vault, creating it when missing. When the date rolls over, the next capture starts the new day's file. Nothing else runs in the background — every invocation is stateless.
+Each run appends to today's daily note in your vault, creating it when missing. When the date rolls over, the next capture starts the new day's file. `capture open` jumps straight to the same note in Obsidian. Nothing else runs in the background — every invocation is stateless.
 
 ## Install
 
@@ -77,6 +78,8 @@ capture -l                   # print today's captures
 capture --list               # same as -l
 capture -l -w                # print the past week's captures under day headings
 capture --list --week        # same as -l -w
+capture open                 # open today's daily note in Obsidian
+capture -- open              # capture the word "open"
 capture --version            # print version and exit
 ```
 
@@ -87,6 +90,7 @@ Details:
 - Stdin and arguments cannot be combined — that is an error, as is an empty capture.
 - `-l` / `--list` prints today's captures: each capture-shaped line of today's daily note, verbatim in file order. An empty or missing day prints nothing and exits 0. It takes no text, no stdin, and no `-t`.
 - `-w` / `--week` extends `-l` to the past week: the last seven daily notes, oldest day first, each day under a `## YYYY-MM-DD` heading. Days with no captures are skipped. It requires `-l` and accepts no text, no stdin, and no `-t`.
+- `open` opens today's daily note in the Obsidian app, creating an empty note first when the day has none. It takes no flags, text, or stdin; use `capture -- open` to capture the word itself. It uses the same `CAPTURE_VAULT`, `CAPTURE_DAILY_DIR`, and `CAPTURE_DAILY_FORMAT` as a capture.
 - Flags come before the text; a dash-word after the first word is captured as text.
 - A successful capture prints nothing and exits 0. Every error goes to stderr and exits 1.
 
