@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,27 @@ import (
 
 // Fixed clock in an explicit zone so assertions never depend on the machine's local zone.
 var testClock = time.Date(2026, 10, 14, 9, 15, 0, 0, time.FixedZone("UTC+7", 7*3600))
+
+// The id column of a rendered line: a Note's follows its timestamp, a Task's
+// follows its checkbox. Tests strip the column so an expectation can state the
+// prose a line carries; TestRunSealsEachCaptureWithAUniqueID pins the ids.
+var (
+	noteIDColumn = regexp.MustCompile(`^(- \d{2}:\d{2} \| )[0-9a-f]{7} \| `)
+	taskIDColumn = regexp.MustCompile(`^(- \[ \] )\| [0-9a-f]{7} \| `)
+	captureID    = regexp.MustCompile(` \| ([0-9a-f]{7}) \| `)
+	timeOfDay    = regexp.MustCompile(`\d{2}:\d{2}`)
+)
+
+// withoutIDs drops the id column from every line of s, leaving the note form
+// "- HH:MM | text" and the task form "- [ ] text".
+func withoutIDs(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		line = taskIDColumn.ReplaceAllString(line, "$1")
+		lines[i] = noteIDColumn.ReplaceAllString(line, "$1")
+	}
+	return strings.Join(lines, "\n")
+}
 
 func TestRun(t *testing.T) {
 	cases := []struct {
@@ -321,7 +343,7 @@ func TestRun(t *testing.T) {
 			if err != nil {
 				t.Fatalf("reading %s: %v", path, err)
 			}
-			if string(got) != tc.want {
+			if withoutIDs(string(got)) != tc.want {
 				t.Errorf("content of %s = %q, want %q", tc.wantFile, got, tc.want)
 			}
 		})
@@ -404,7 +426,7 @@ func TestRunTreatsCharDeviceStdinAsAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "- 09:15 | quick thought\n"; string(got) != want {
+	if want := "- 09:15 | quick thought\n"; withoutIDs(string(got)) != want {
 		t.Errorf("2026-10-14.md = %q, want %q", got, want)
 	}
 }
@@ -432,8 +454,70 @@ func TestRunReadsNonCharStatableStdin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "- 09:15 | first\n- 09:15 | second\n"; string(got) != want {
+	if want := "- 09:15 | first\n- 09:15 | second\n"; withoutIDs(string(got)) != want {
 		t.Errorf("2026-10-14.md = %q, want %q", got, want)
+	}
+}
+
+// Every rendered line carries its own capture id column: seven hex characters
+// between pipes, the shape of a git short hash, sitting after the timestamp of a
+// Note and after the checkbox of a Task. Ids are random, so two entries never
+// share one; -l prints them back verbatim, which is what lets a later reader
+// grep the row back.
+func TestRunSealsEachCaptureWithAUniqueID(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+
+	steps := [][]string{
+		{"a", "note"},
+		{"-t", "a", "task"},
+	}
+	for _, args := range steps {
+		var stdout, stderr bytes.Buffer
+		if err := run(args, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+			t.Fatalf("run(%v): %v", args, err)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	if err := run(nil, getenv, testClock, strings.NewReader("piped one\npiped two\n"), &stdout, &stderr); err != nil {
+		t.Fatalf("run from stdin: %v", err)
+	}
+
+	note, err := os.ReadFile(filepath.Join(vault, "2026-10-14.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(note), "\n"), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("wrote %d lines, want 4: %q", len(lines), note)
+	}
+	seen := make(map[string]string)
+	for _, line := range lines {
+		// The shape regexps verify the column sits where it belongs; captureID
+		// pulls the id out of it.
+		if !noteIDColumn.MatchString(line) && !taskIDColumn.MatchString(line) {
+			t.Errorf("line %q has no capture id column", line)
+			continue
+		}
+		id := captureID.FindStringSubmatch(line)[1]
+		if prev, dup := seen[id]; dup {
+			t.Errorf("id %q used by both %q and %q", id, prev, line)
+		}
+		seen[id] = line
+	}
+
+	// The listing carries the same ids verbatim, so a row can be called back.
+	stdout.Reset()
+	if err := run([]string{"-l"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(-l): %v", err)
+	}
+	if stdout.String() != string(note) {
+		t.Errorf("-l output = %q, want the Daily note verbatim %q", stdout.String(), note)
 	}
 }
 
@@ -453,7 +537,7 @@ func TestRunHelpDocumentsFlagsAndEnvVars(t *testing.T) {
 		"open",
 		"--", "stdin",
 		"CAPTURE_VAULT", "CAPTURE_DAILY_DIR", "CAPTURE_DAILY_FORMAT",
-		"2006-01-02",
+		"2006-01-02", "capture id",
 	} {
 		if !strings.Contains(help, want) {
 			t.Errorf("--help output missing %q:\n%s", want, help)
@@ -487,12 +571,12 @@ func TestRunMixesNotesAndTasksInOneFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "- 09:15 | first thought\n- [ ] go to dentist\n- [ ] buy milk\n"
-	if string(got) != want {
+	if withoutIDs(string(got)) != want {
 		t.Errorf("2026-10-14.md = %q, want %q", got, want)
 	}
 	for _, line := range strings.Split(strings.TrimSuffix(string(got), "\n"), "\n") {
-		if strings.HasPrefix(line, "- [ ] ") && strings.Contains(line, "|") {
-			t.Errorf("task line %q must never carry a timestamp or pipe", line)
+		if strings.HasPrefix(line, "- [ ] ") && timeOfDay.MatchString(line) {
+			t.Errorf("task line %q must never carry a timestamp", line)
 		}
 	}
 }
@@ -530,7 +614,7 @@ func TestRunAccumulatesAndRollsOver(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantDayOne := "- 09:15 | first\n- 23:59 | second\n"
-	if string(dayOneContent) != wantDayOne {
+	if withoutIDs(string(dayOneContent)) != wantDayOne {
 		t.Errorf("2026-10-14.md = %q, want %q", dayOneContent, wantDayOne)
 	}
 
@@ -539,7 +623,7 @@ func TestRunAccumulatesAndRollsOver(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantDayTwo := "- 00:01 | third\n"
-	if string(dayTwoContent) != wantDayTwo {
+	if withoutIDs(string(dayTwoContent)) != wantDayTwo {
 		t.Errorf("2026-10-15.md = %q, want %q", dayTwoContent, wantDayTwo)
 	}
 }
@@ -572,7 +656,7 @@ func TestRunListPrintsCaptureLinesOnly(t *testing.T) {
 	}
 	want := "- 08:00 | earlier note\n- [ ] open the door\n- [x] done thing\n" +
 		"- [X] also done\n- 09:15 | later thought\n"
-	if stdout.String() != want {
+	if withoutIDs(stdout.String()) != want {
 		t.Errorf("stdout = %q, want %q", stdout.String(), want)
 	}
 	if stderr.Len() != 0 {
@@ -598,7 +682,7 @@ func TestRunListPrintsCaptureLinesOnly(t *testing.T) {
 	if err := run([]string{"--list"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatalf("run(--list): %v", err)
 	}
-	if stdout.String() != want {
+	if withoutIDs(stdout.String()) != want {
 		t.Errorf("--list stdout = %q, want %q", stdout.String(), want)
 	}
 }
@@ -691,7 +775,7 @@ func TestRunListHonoursCustomDailyLayout(t *testing.T) {
 		t.Fatalf("run(-l): %v", err)
 	}
 	want := "- 09:15 | hello world\n"
-	if stdout.String() != want {
+	if withoutIDs(stdout.String()) != want {
 		t.Errorf("stdout = %q, want %q", stdout.String(), want)
 	}
 
@@ -706,7 +790,7 @@ func TestRunListHonoursCustomDailyLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != want {
+	if withoutIDs(string(got)) != want {
 		t.Errorf("Journal/14-10-2026.md = %q, want %q", got, want)
 	}
 }
@@ -749,7 +833,7 @@ func TestRunWeekListSpansSevenDaysOldestFirst(t *testing.T) {
 		"## 2026-10-10\n- 10:00 | mid note\n- 10:05 | second thought\n" +
 		"## 2026-10-13\n- 08:00 | yesterday note\n- [ ] yesterday task\n" +
 		"## 2026-10-14\n- 09:15 | today note\n"
-	if stdout.String() != want {
+	if withoutIDs(stdout.String()) != want {
 		t.Errorf("stdout = %q, want %q", stdout.String(), want)
 	}
 	if stderr.Len() != 0 {
@@ -771,7 +855,7 @@ func TestRunWeekListSpansSevenDaysOldestFirst(t *testing.T) {
 	if err := run([]string{"--list", "--week"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatalf("run(--list --week): %v", err)
 	}
-	if stdout.String() != want {
+	if withoutIDs(stdout.String()) != want {
 		t.Errorf("--list --week stdout = %q, want %q", stdout.String(), want)
 	}
 }
@@ -859,7 +943,7 @@ func TestRunWeekHonoursCustomDailyLayout(t *testing.T) {
 	want := "## 2026-10-08\n- 10:00 | week-old note\n" +
 		"## 2026-10-13\n- 08:00 | yesterday note\n" +
 		"## 2026-10-14\n- 09:15 | today note\n"
-	if stdout.String() != want {
+	if withoutIDs(stdout.String()) != want {
 		t.Errorf("stdout = %q, want %q", stdout.String(), want)
 	}
 	if strings.Contains(stdout.String(), "too old") {
@@ -1187,7 +1271,7 @@ func TestRunOpenWordRemainsCapturable(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if string(got) != tc.want {
+			if withoutIDs(string(got)) != tc.want {
 				t.Errorf("2026-10-14.md = %q, want %q", got, tc.want)
 			}
 		})

@@ -19,3 +19,7 @@ _Avoid_: todo, to-do, action item
 **Daily note**:
 The dated markdown file in the Obsidian vault that accumulates every capture for one calendar day.
 _Avoid_: journal, daily file, log
+
+**Capture id**:
+The seven hex characters between pipes in a rendered line (`- 09:15 | 0b17a3b | text`), the shape of a git short hash, greppable across the vault so one capture can be called back later.
+_Avoid_: hash, uuid, key

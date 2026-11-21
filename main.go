@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -22,13 +24,29 @@ const dailyFormat = "2006-01-02"
 
 // The line shapes a capture renders, the single source for both the writer
 // (entry in run) and the list matcher below: a Note is notePrefix + HH:MM +
-// noteSep + text, a Task is taskPrefix + text. Edit these and both sides follow.
+// colSep + id + colSep + text, a Task is taskPrefix + idPipe + id + colSep +
+// text. Edit these and both sides follow.
 const (
 	notePrefix     = "- "
-	noteSep        = " | "
+	colSep         = " | "
 	noteTimeFormat = "15:04"
 	taskPrefix     = "- [ ] "
+	// idPipe opens a Task's id column: taskPrefix already ends in a space, so
+	// only the pipe itself is missing.
+	idPipe = "| "
 )
+
+// randomID is the capture id: seven hex characters, the shape of a git short
+// hash, sitting between pipes as a column of its own. Collisions are left to
+// chance: 28 random bits over one day's file make one vanishingly unlikely, and
+// a dedupe scan would cost a re-read on every capture.
+func randomID() (string, error) {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:])[:7], nil
+}
 
 const helpText = `Usage: capture [flags] text...
        capture open
@@ -51,10 +69,15 @@ Input rules:
   Arguments and piped stdin together is an error; empty input is an error.
   Use -- before text that starts with a dash, e.g. capture -- -todo list.
 
+Capture ids:
+  Every line carries a capture id column: seven hex characters between pipes,
+  e.g. "- 09:15 | 0b17a3b | text" or "- [ ] | 0b17a3b | value". Grep the
+  vault for an id to call that capture back later.
+
 Flags:
   -t, --todo
-        record a task instead of a note (renders "- [ ] text"); without it the
-        entry is a note (renders "- HH:MM | text").
+        record a task instead of a note (renders "- [ ] | id | text"); without
+        it the entry is a note (renders "- HH:MM | id | text").
   -l, --list
         print today's captures: each capture-shaped line of today's daily note
         verbatim, in file order. An empty or missing day prints nothing and
@@ -236,24 +259,36 @@ func runWithOpener(args []string, getenv func(string) string, now time.Time, std
 		}
 		return listCaptures(path, stdout)
 	}
-	// Task entries render "- [ ] text" with no timestamp; note entries
-	// render "- HH:MM | text". Piped stdin yields one entry per non-empty
+	// Task entries render "- [ ] | id | text" with no timestamp; note entries
+	// render "- HH:MM | id | text". Piped stdin yields one entry per non-empty
 	// trimmed line; the task flag applies to stdin-derived entries too.
-	entry := func(s string) string {
-		if task {
-			return taskPrefix + s + "\n"
+	entry := func(s string) (string, error) {
+		id, err := randomID()
+		if err != nil {
+			return "", fmt.Errorf("generating capture id: %w", err)
 		}
-		return notePrefix + now.Format(noteTimeFormat) + noteSep + s + "\n"
+		if task {
+			return taskPrefix + idPipe + id + colSep + s + "\n", nil
+		}
+		return notePrefix + now.Format(noteTimeFormat) + colSep + id + colSep + s + "\n", nil
 	}
 	var buf strings.Builder
 	if piped {
 		for _, l := range strings.Split(string(raw), "\n") {
 			if l = strings.TrimSpace(l); l != "" {
-				buf.WriteString(entry(l))
+				e, err := entry(l)
+				if err != nil {
+					return err
+				}
+				buf.WriteString(e)
 			}
 		}
 	} else {
-		buf.WriteString(entry(text))
+		e, err := entry(text)
+		if err != nil {
+			return err
+		}
+		buf.WriteString(e)
 	}
 	line := buf.String()
 
@@ -325,9 +360,10 @@ func openURL(rawURL string) error {
 }
 
 // noteMarker matches a Note line's prefix, built from the same notePrefix and
-// noteSep constants the writer uses; prose bullets and template headings
-// never carry it.
-var noteMarker = regexp.MustCompile("^" + regexp.QuoteMeta(notePrefix) + `\d{2}:\d{2}` + regexp.QuoteMeta(noteSep))
+// colSep constants the writer uses; prose bullets and template headings never
+// carry it. Ids are not required: a line captured before ids existed still
+// matches.
+var noteMarker = regexp.MustCompile("^" + regexp.QuoteMeta(notePrefix) + `\d{2}:\d{2}` + regexp.QuoteMeta(colSep))
 
 // isCaptureLine reports whether a Daily note line is a stored capture: a Note
 // or a Task checkbox (unchecked or checked; capture itself only ever writes
