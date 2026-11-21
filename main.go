@@ -23,17 +23,18 @@ import (
 const dailyFormat = "2006-01-02"
 
 // The line shapes a capture renders, the single source for both the writer
-// (entry in run) and the list matcher below: a Note is notePrefix + HH:MM +
-// colSep + id + colSep + text, a Task is taskPrefix + idPipe + id + colSep +
-// text. Edit these and both sides follow.
+// (entry in run) and the list matcher below. Both types carry the same
+// time + colSep + id + colSep + text tail; only the opening column differs: a
+// Note opens with notePrefix, a Task with a checkbox and taskTimePipe. Edit
+// these and both sides follow.
 const (
 	notePrefix     = "- "
 	colSep         = " | "
 	noteTimeFormat = "15:04"
 	taskPrefix     = "- [ ] "
-	// idPipe opens a Task's id column: taskPrefix already ends in a space, so
-	// only the pipe itself is missing.
-	idPipe = "| "
+	// taskTimePipe opens a Task's time column: taskPrefix already ends in a
+	// space, so the pipe keeps the time from reading as part of the checkbox.
+	taskTimePipe = "| "
 )
 
 // randomID is the capture id: seven hex characters, the shape of a git short
@@ -71,13 +72,13 @@ Input rules:
 
 Capture ids:
   Every line carries a capture id column: seven hex characters between pipes,
-  e.g. "- 09:15 | 0b17a3b | text" or "- [ ] | 0b17a3b | value". Grep the
-  vault for an id to call that capture back later.
+  e.g. "- 09:15 | 0b17a3b | text" or "- [ ] | 09:15 | 0b17a3b | value". Grep
+  the vault for an id to call that capture back later.
 
 Flags:
   -t, --todo
-        record a task instead of a note (renders "- [ ] | id | text"); without
-        it the entry is a note (renders "- HH:MM | id | text").
+        record a task instead of a note (renders "- [ ] | HH:MM | id | text");
+        without it the entry is a note (renders "- HH:MM | id | text").
   -l, --list
         print today's captures: each capture-shaped line of today's daily note
         verbatim, in file order. An empty or missing day prints nothing and
@@ -259,18 +260,19 @@ func runWithOpener(args []string, getenv func(string) string, now time.Time, std
 		}
 		return listCaptures(path, stdout)
 	}
-	// Task entries render "- [ ] | id | text" with no timestamp; note entries
-	// render "- HH:MM | id | text". Piped stdin yields one entry per non-empty
+	// Task entries render "- [ ] | HH:MM | id | text"; note entries render
+	// "- HH:MM | id | text". Piped stdin yields one entry per non-empty
 	// trimmed line; the task flag applies to stdin-derived entries too.
 	entry := func(s string) (string, error) {
 		id, err := randomID()
 		if err != nil {
 			return "", fmt.Errorf("generating capture id: %w", err)
 		}
+		prefix := notePrefix
 		if task {
-			return taskPrefix + idPipe + id + colSep + s + "\n", nil
+			prefix = taskPrefix + taskTimePipe
 		}
-		return notePrefix + now.Format(noteTimeFormat) + colSep + id + colSep + s + "\n", nil
+		return prefix + now.Format(noteTimeFormat) + colSep + id + colSep + s + "\n", nil
 	}
 	var buf strings.Builder
 	if piped {

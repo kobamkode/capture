@@ -70,7 +70,7 @@ The Go layout syntax is what `time.Format` expects: `2006-01-02` is the default,
 
 ```sh
 capture <text...>            # note entry:  - 09:15 | 0b17a3b | text
-capture -t <text...>         # task entry:  - [ ] | 0b17a3b | text
+capture -t <text...>         # task entry:  - [ ] | 09:15 | 0b17a3b | text
 capture --todo <text...>     # same as -t
 capture -- -todo list        # text starting with a dash
 printf 'a\nb\n' | capture    # one entry per non-empty line
@@ -86,8 +86,8 @@ capture --version            # print version and exit
 Details:
 
 - Quotes are optional: `capture i think i need to learn math` is one entry (all arguments joined with single spaces).
-- Note entries carry a 24-hour local timestamp; task entries are unchecked checkboxes without one.
-- Every rendered line carries a **capture id** column: seven hex characters between pipes, the shape of a git short hash — after the timestamp of a note, after the checkbox of a task. Grep the vault for an id to call that capture back later, e.g. tell an agent "explore `0b17a3b` in journal".
+- Note and task entries carry a 24-hour local timestamp; task entries are unchecked checkboxes.
+- Every rendered line carries a **capture id** column: seven hex characters between pipes, the shape of a git short hash — after the timestamp of a note or a task. Grep the vault for an id to call that capture back later, e.g. tell an agent "explore `0b17a3b` in journal".
 - Stdin and arguments cannot be combined — that is an error, as is an empty capture.
 - `-l` / `--list` prints today's captures: each capture-shaped line of today's daily note, verbatim in file order. An empty or missing day prints nothing and exits 0. It takes no text, no stdin, and no `-t`.
 - `-w` / `--week` extends `-l` to the past week: the last seven daily notes, oldest day first, each day under a `## YYYY-MM-DD` heading. Days with no captures are skipped. It requires `-l` and accepts no text, no stdin, and no `-t`.
@@ -99,7 +99,7 @@ Details:
 
 ```markdown
 - 09:15 | 0b17a3b | i think i need to learn math
-- [ ] | b7e4f21 | go to dentist
+- [ ] | 09:16 | b7e4f21 | go to dentist
 - 09:20 | 3c9d0ae | remember the milk
 ```
 
@@ -108,7 +108,7 @@ Listing the same day back — only the captures, in file order:
 ```console
 $ capture -l
 - 09:15 | 0b17a3b | i think i need to learn math
-- [ ] | b7e4f21 | go to dentist
+- [ ] | 09:16 | b7e4f21 | go to dentist
 - 09:20 | 3c9d0ae | remember the milk
 ```
 
@@ -123,11 +123,11 @@ The week listing adds a heading per day, oldest day first:
 ```console
 $ capture -l -w
 ## 2026-10-08
-- [ ] | 5a1c8b3 | old task
+- [ ] | 07:30 | 5a1c8b3 | old task
 
 ## 2026-10-13
 - 08:00 | e02f7d9 | yesterday note
-- [ ] | 1d3b6a4 | dentist tomorrow
+- [ ] | 18:30 | 1d3b6a4 | dentist tomorrow
 
 ## 2026-10-14
 - 09:15 | c48e5f0 | today note

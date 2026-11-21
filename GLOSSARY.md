@@ -13,7 +13,7 @@ A capture type that records a thought; its rendered line carries a capture times
 _Avoid_: thought, remark
 
 **Task**:
-A capture type that records an action item; its rendered line is an unchecked checkbox without a timestamp.
+A capture type that records an action item; its rendered line is an unchecked checkbox followed by the same timestamp, id and text columns a Note carries.
 _Avoid_: todo, to-do, action item
 
 **Daily note**:

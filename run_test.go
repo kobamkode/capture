@@ -16,18 +16,18 @@ import (
 // Fixed clock in an explicit zone so assertions never depend on the machine's local zone.
 var testClock = time.Date(2026, 10, 14, 9, 15, 0, 0, time.FixedZone("UTC+7", 7*3600))
 
-// The id column of a rendered line: a Note's follows its timestamp, a Task's
-// follows its checkbox. Tests strip the column so an expectation can state the
-// prose a line carries; TestRunSealsEachCaptureWithAUniqueID pins the ids.
+// The id column of a rendered line, which follows the timestamp of both
+// capture types. Tests strip the column so an expectation can state the prose
+// a line carries; TestRunSealsEachCaptureWithAUniqueID pins the ids.
 var (
 	noteIDColumn = regexp.MustCompile(`^(- \d{2}:\d{2} \| )[0-9a-f]{7} \| `)
-	taskIDColumn = regexp.MustCompile(`^(- \[ \] )\| [0-9a-f]{7} \| `)
+	taskIDColumn = regexp.MustCompile(`^(- \[ \] \| \d{2}:\d{2} \| )[0-9a-f]{7} \| `)
 	captureID    = regexp.MustCompile(` \| ([0-9a-f]{7}) \| `)
 	timeOfDay    = regexp.MustCompile(`\d{2}:\d{2}`)
 )
 
 // withoutIDs drops the id column from every line of s, leaving the note form
-// "- HH:MM | text" and the task form "- [ ] text".
+// "- HH:MM | text" and the task form "- [ ] | HH:MM | text".
 func withoutIDs(s string) string {
 	lines := strings.Split(s, "\n")
 	for i, line := range lines {
@@ -136,18 +136,18 @@ func TestRun(t *testing.T) {
 			wantErr:   "empty capture",
 		},
 		{
-			name:      "-t renders a task checkbox line with no timestamp",
+			name:      "-t renders a task checkbox line with the capture time",
 			vaultMode: "dir",
 			args:      []string{"-t", "go to dentist"},
 			wantFile:  "2026-10-14.md",
-			want:      "- [ ] go to dentist\n",
+			want:      "- [ ] | 09:15 | go to dentist\n",
 		},
 		{
 			name:      "--todo renders the same task line as -t",
 			vaultMode: "dir",
 			args:      []string{"--todo", "go to dentist"},
 			wantFile:  "2026-10-14.md",
-			want:      "- [ ] go to dentist\n",
+			want:      "- [ ] | 09:15 | go to dentist\n",
 		},
 		{
 			name:      "-- separator captures dash-leading text as a note",
@@ -184,7 +184,7 @@ func TestRun(t *testing.T) {
 			args:      []string{"-t"},
 			stdin:     "  first task  \n\n   \nsecond task\n",
 			wantFile:  "2026-10-14.md",
-			want:      "- [ ] first task\n- [ ] second task\n",
+			want:      "- [ ] | 09:15 | first task\n- [ ] | 09:15 | second task\n",
 		},
 		{
 			name:      "-t with args and stdin together is a hard error",
@@ -460,8 +460,8 @@ func TestRunReadsNonCharStatableStdin(t *testing.T) {
 }
 
 // Every rendered line carries its own capture id column: seven hex characters
-// between pipes, the shape of a git short hash, sitting after the timestamp of a
-// Note and after the checkbox of a Task. Ids are random, so two entries never
+// between pipes, the shape of a git short hash, sitting after the timestamp of
+// a Note or a Task. Ids are random, so two entries never
 // share one; -l prints them back verbatim, which is what lets a later reader
 // grep the row back.
 func TestRunSealsEachCaptureWithAUniqueID(t *testing.T) {
@@ -570,13 +570,13 @@ func TestRunMixesNotesAndTasksInOneFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "- 09:15 | first thought\n- [ ] go to dentist\n- [ ] buy milk\n"
+	want := "- 09:15 | first thought\n- [ ] | 09:15 | go to dentist\n- [ ] | 09:15 | buy milk\n"
 	if withoutIDs(string(got)) != want {
 		t.Errorf("2026-10-14.md = %q, want %q", got, want)
 	}
 	for _, line := range strings.Split(strings.TrimSuffix(string(got), "\n"), "\n") {
-		if strings.HasPrefix(line, "- [ ] ") && timeOfDay.MatchString(line) {
-			t.Errorf("task line %q must never carry a timestamp", line)
+		if strings.HasPrefix(line, "- [ ] ") && !timeOfDay.MatchString(line) {
+			t.Errorf("task line %q must carry a timestamp", line)
 		}
 	}
 }
@@ -1252,7 +1252,7 @@ func TestRunOpenWordRemainsCapturable(t *testing.T) {
 		want string
 	}{
 		{"-- separator", []string{"--", "open"}, "- 09:15 | open\n"},
-		{"task flag before", []string{"-t", "open"}, "- [ ] open\n"},
+		{"task flag before", []string{"-t", "open"}, "- [ ] | 09:15 | open\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
