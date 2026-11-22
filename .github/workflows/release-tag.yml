@@ -1,0 +1,82 @@
+name: release tag
+
+# Cuts the next annotated vX.Y.Z tag on every push to main, from the commit
+# subjects since the last tag: a feature bumps the minor, anything else the
+# patch. Annotated tags only; `go install ...@latest` resolves to the newest.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Tagging is a whole-repo operation: overlapping runs would race for the same
+# tag name, so queue them instead of cancelling.
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Tags are the input, so the default single-commit clone will not do.
+          fetch-depth: 0
+
+      # Never tag code that does not pass its own tests.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test ./...
+
+      - name: Tag the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # A re-run, or a push that changed nothing, must not add a tag.
+          if tagged=$(git describe --tags --exact-match HEAD 2>/dev/null); then
+            echo "HEAD is already tagged $tagged; nothing to do"
+            exit 0
+          fi
+
+          last=$(git tag -l 'v[0-9]*' | sort -V | tail -1)
+          if [ -z "$last" ]; then
+            next=v0.1.0
+            range=HEAD
+          else
+            range="$last..HEAD"
+            subjects=$(git log --format=%s "$range")
+            base=${last#v}
+            major=${base%%.*}
+            rest=${base#*.}
+            minor=${rest%%.*}
+            patch=${rest#*.}
+            # `feat:` bumps the minor, and so does a breaking `!:` on any type.
+            # Everything else, fixes included, bumps the patch.
+            if grep -qE '^(feat(\([^)]*\))?|[a-z]+(\([^)]*\))?!):' <<<"$subjects"; then
+              next="v$major.$((minor + 1)).0"
+            else
+              next="v$major.$minor.$((patch + 1))"
+            fi
+          fi
+
+          # A tag that already exists is never moved: if this run lost a race or
+          # the tag was cut by hand, leave it and report.
+          if git rev-parse -q --verify "refs/tags/$next" >/dev/null; then
+            echo "tag $next already exists; leaving it alone"
+            exit 0
+          fi
+
+          git tag -a "$next" \
+            -m "tag $next: $(git log -1 --format=%s HEAD)" \
+            -m "$(git log --format='- %s' "$range")"
+          git push origin "$next"
+          echo "tagged $next"

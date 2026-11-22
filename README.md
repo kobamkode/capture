@@ -144,4 +144,6 @@ go test ./...
 
 Tests drive a single `run` seam with an injected clock and temp vault directories, so date rollover and timestamps assert deterministically.
 
-Releases are git tags: `go install github.com/kobamkode/capture@latest` resolves to the newest tag, and `--version` reports it because `go install pkg@vX.Y.Z` embeds the module version in the binary. Tag with `git tag vX.Y.Z && git push --tags`; a build without a tag reports `devel`.
+Releases are git tags: `go install github.com/kobamkode/capture@latest` resolves to the newest tag, and `--version` reports it because `go install pkg@vX.Y.Z` embeds the module version in the binary. A build without a tag reports `devel`.
+
+Tags are cut automatically: `.github/workflows/release-tag.yml` runs the tests on every push to `main`, then tags `HEAD` with the next `vX.Y.Z` from the subjects since the last tag. A `feat:` commit, or a breaking `!:` on any type, bumps the minor; everything else bumps the patch. Tags are annotated and never moved, and a push whose `HEAD` is already tagged is a no-op. To cut one by hand, `git tag -a vX.Y.Z -m "tag vX.Y.Z: ..." && git push origin vX.Y.Z`.
