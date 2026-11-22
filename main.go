@@ -51,6 +51,7 @@ func randomID() (string, error) {
 
 const helpText = `Usage: capture [flags] text...
        capture open
+       capture find <id>
        echo "line" | capture
 
 Appends each capture as an entry to today's daily note in an Obsidian vault.
@@ -62,6 +63,13 @@ Commands:
         open today's daily note in Obsidian, creating it when missing.
         Takes no flags, text, or stdin. To capture the word itself, use the
         -- separator: capture -- open.
+  find <id>
+        print every capture whose id column equals <id>, as path:line:text.
+        Reads the daily notes in $CAPTURE_VAULT (or CAPTURE_DAILY_DIR) across
+        all days, oldest filename first; files whose name is not a daily note
+        under CAPTURE_DAILY_FORMAT are ignored. No match is an empty result:
+        no output, exit 0. Takes no flags, no stdin, and exactly one id. To
+        capture the word itself, use -- : capture -- find <text>.
 
 Input rules:
   Arguments: all remaining words are joined with single spaces into one entry.
@@ -127,11 +135,12 @@ func version() string {
 }
 
 func runWithOpener(args []string, getenv func(string) string, now time.Time, stdin io.Reader, stdout, stderr io.Writer, open func(string) error) error {
-	// `capture open` is a command, not a capture of the word "open". It must be
-	// the first argument, so `capture -t open` and `capture -- open` still
-	// capture the text.
+	// `capture open` and `capture find` are commands, not captures of the word
+	// "open" or "find". Each must be the first argument, so `capture -t open`
+	// and `capture -- open` still capture the text.
 	openMode := len(args) > 0 && args[0] == "open"
-	if openMode {
+	findMode := len(args) > 0 && args[0] == "find"
+	if openMode || findMode {
 		args = args[1:]
 	}
 
@@ -168,6 +177,12 @@ func runWithOpener(args []string, getenv func(string) string, now time.Time, std
 		if task || list || week || len(flags.Args()) > 0 {
 			return errors.New("open takes no flags, text, or stdin")
 		}
+	} else if findMode {
+		// Find takes exactly one id and nothing else: a mistyped call must fail
+		// loudly instead of being treated as the text "find".
+		if task || list || week || len(flags.Args()) != 1 {
+			return errors.New("find takes exactly one capture id")
+		}
 	} else if week && !list {
 		// Week is a listing modifier: alone it is a mistyped command, so fail
 		// loudly instead of capturing "-w text".
@@ -201,6 +216,10 @@ func runWithOpener(args []string, getenv func(string) string, now time.Time, std
 	if openMode {
 		if piped {
 			return errors.New("open takes no flags, text, or stdin")
+		}
+	} else if findMode {
+		if piped {
+			return errors.New("find takes no stdin")
 		}
 	} else if list {
 		if text != "" || piped || task {
@@ -245,6 +264,12 @@ func runWithOpener(args []string, getenv func(string) string, now time.Time, std
 	if parsed, err := time.Parse(layout, name); err != nil ||
 		parsed.Year() != now.Year() || parsed.Month() != now.Month() || parsed.Day() != now.Day() {
 		return fmt.Errorf("CAPTURE_DAILY_FORMAT is not a valid Go time layout: %s", layout)
+	}
+
+	// Find is a lookup across the stored days rather than today's note: it
+	// reads the directory and never creates or writes anything.
+	if findMode {
+		return findCaptures(dir, layout, flags.Args()[0], stdout)
 	}
 
 	path := filepath.Join(dir, name+".md")
@@ -395,6 +420,56 @@ func captureLines(path string) ([]string, error) {
 		}
 	}
 	return lines, nil
+}
+
+// findID is the shape of a capture id: seven lowercase hex characters, the
+// same shape randomID renders. Anything else is rejected before the vault is
+// touched, so a truncated or pasted-wrong id can never match another column.
+var findID = regexp.MustCompile(`^[0-9a-f]{7}$`)
+
+// idColumn matches a capture-shaped line up to and including its id column and
+// captures the id. It accepts both capture types and the checked task boxes a
+// vault edit produces, and is anchored at the line start, so an id quoted
+// inside a capture's text is not mistaken for a column.
+var idColumn = regexp.MustCompile(
+	`^(?:` + regexp.QuoteMeta(notePrefix) + `\d{2}:\d{2}` +
+		`|` + regexp.QuoteMeta(taskPrefix) + `\| \d{2}:\d{2}` +
+		`|- \[[xX]\] \| \d{2}:\d{2})` +
+		regexp.QuoteMeta(colSep) + `([0-9a-f]{7})` + regexp.QuoteMeta(colSep))
+
+// findCaptures prints every capture whose id column equals id, as
+// "path:line:text", oldest daily note first. Only files named by the daily
+// layout are read, so unrelated Markdown in the vault cannot supply a hit and
+// a misconfigured vault is not swept. A missing id is an empty result: no
+// output, no error, nothing created.
+func findCaptures(dir, layout, id string, stdout io.Writer) error {
+	if !findID.MatchString(id) {
+		return fmt.Errorf("not a capture id (seven lowercase hex characters): %s", id)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".md") {
+			continue
+		}
+		if _, err := time.Parse(layout, strings.TrimSuffix(name, ".md")); err != nil {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for i, line := range strings.Split(strings.TrimSuffix(string(b), "\n"), "\n") {
+			if m := idColumn.FindStringSubmatch(line); m != nil && m[1] == id {
+				fmt.Fprintf(stdout, "%s:%d:%s\n", path, i+1, line)
+			}
+		}
+	}
+	return nil
 }
 
 // listCaptures prints today's capture-shaped lines verbatim in file order.

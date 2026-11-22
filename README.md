@@ -79,7 +79,9 @@ capture --list               # same as -l
 capture -l -w                # print the past week's captures under day headings
 capture --list --week        # same as -l -w
 capture open                 # open today's daily note in Obsidian
+capture find <id>            # print every capture with that id: path:line:text
 capture -- open              # capture the word "open"
+capture -- find <text>       # capture the word "find"
 capture --version            # print version and exit
 ```
 
@@ -87,11 +89,12 @@ Details:
 
 - Quotes are optional: `capture i think i need to learn math` is one entry (all arguments joined with single spaces).
 - Note and task entries carry a 24-hour local timestamp; task entries are unchecked checkboxes.
-- Every rendered line carries a **capture id** column: seven hex characters between pipes, the shape of a git short hash — after the timestamp of a note or a task. Grep the vault for an id to call that capture back later, e.g. tell an agent "explore `0b17a3b` in journal".
+- Every rendered line carries a **capture id** column: seven hex characters between pipes, the shape of a git short hash — after the timestamp of a note or a task. Call a capture back with `capture find <id>`, or tell an agent "explore `0b17a3b` in journal".
 - Stdin and arguments cannot be combined — that is an error, as is an empty capture.
 - `-l` / `--list` prints today's captures: each capture-shaped line of today's daily note, verbatim in file order. An empty or missing day prints nothing and exits 0. It takes no text, no stdin, and no `-t`.
 - `-w` / `--week` extends `-l` to the past week: the last seven daily notes, oldest day first, each day under a `## YYYY-MM-DD` heading. Days with no captures are skipped. It requires `-l` and accepts no text, no stdin, and no `-t`.
 - `open` opens today's daily note in the Obsidian app, creating an empty note first when the day has none. It takes no flags, text, or stdin; use `capture -- open` to capture the word itself. It uses the same `CAPTURE_VAULT`, `CAPTURE_DAILY_DIR`, and `CAPTURE_DAILY_FORMAT` as a capture.
+- `find <id>` prints every capture whose id column equals `<id>` as `path:line:text`, oldest daily note first. It reads the daily notes in the configured directory across all days, ignores files whose name is not a daily note under `CAPTURE_DAILY_FORMAT`, and never writes. It takes exactly one id, no stdin, and no flags; no match prints nothing and exits 0, a malformed id is an error, and `capture -- find <text>` still captures the word.
 - Flags come before the text; a dash-word after the first word is captured as text.
 - A successful capture prints nothing and exits 0. Every error goes to stderr and exits 1.
 

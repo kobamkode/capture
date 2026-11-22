@@ -1374,3 +1374,243 @@ func TestObsidianURLIsAbsoluteAndEncoded(t *testing.T) {
 		t.Errorf("obsidianURL(%q) = %q, want %q", rel, got, want)
 	}
 }
+
+// Find prints the matching capture with its location, across days, oldest
+// daily note first. An id quoted inside another capture's text is not a column
+// hit, and a Markdown file that is not a daily note is never read.
+func TestRunFindPrintsMatchingLineWithLocation(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+	older := filepath.Join(vault, "2026-10-12.md")
+	newer := filepath.Join(vault, "2026-10-14.md")
+	olderBody := "# Daily\n\n- 08:00 | a1b2c3d | first mention\n- [ ] | 08:10 | 0badf00 | task with another id\n"
+	newerBody := "- 09:00 | a1b2c3d | second mention\n- [x] | 09:05 | a1b2c3d | checked task, same id\n" +
+		"- 09:10 | deadbee | prose quoting  | a1b2c3d |  is not an id column\n"
+	if err := os.WriteFile(older, []byte(olderBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newer, []byte(newerBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Not a daily note under the default layout: must not be searched.
+	if err := os.WriteFile(filepath.Join(vault, "notes.md"), []byte("- 07:00 | a1b2c3d | stray\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"find", "a1b2c3d"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(find): %v", err)
+	}
+	want := older + ":3:- 08:00 | a1b2c3d | first mention\n" +
+		newer + ":1:- 09:00 | a1b2c3d | second mention\n" +
+		newer + ":2:- [x] | 09:05 | a1b2c3d | checked task, same id\n"
+	if stdout.String() != want {
+		t.Errorf("stdout = %q, want %q", stdout.String(), want)
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("stderr = %q, want empty", stderr.String())
+	}
+	if got, err := os.ReadFile(newer); err != nil || string(got) != newerBody {
+		t.Errorf("find modified the Daily note: %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(vault, "notes.md")); err != nil ||
+		string(got) != "- 07:00 | a1b2c3d | stray\n" {
+		t.Errorf("find touched the non-daily note: %q, %v", got, err)
+	}
+}
+
+// A missing id, an empty vault, and an id that only appears inside another
+// capture's text are all empty results: no output, no error, nothing created.
+func TestRunFindEmptyResults(t *testing.T) {
+	cases := []struct {
+		name string
+		note string // "" = no daily note exists
+		id   string
+	}{
+		{"missing daily note", "", "a1b2c3d"},
+		{"daily note without a match", "- 09:00 | 0badf00 | other\n", "a1b2c3d"},
+		{"id only inside another capture's text", "- 09:00 | deadbee | saw | a1b2c3d | earlier\n", "a1b2c3d"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vault := t.TempDir()
+			getenv := func(key string) string {
+				if key == "CAPTURE_VAULT" {
+					return vault
+				}
+				return ""
+			}
+			if tc.note != "" {
+				if err := os.WriteFile(filepath.Join(vault, "2026-10-14.md"), []byte(tc.note), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var stdout, stderr bytes.Buffer
+			if err := run([]string{"find", tc.id}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+				t.Fatalf("run(find %s): %v", tc.id, err)
+			}
+			if stdout.Len() != 0 || stderr.Len() != 0 {
+				t.Errorf("stdout = %q, stderr = %q, want both empty", stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+// Find refuses anything that is not one valid id, before it reads the vault,
+// and rejects piped input like the other read-only commands.
+func TestRunFindRejectsCaptureInput(t *testing.T) {
+	cases := []struct {
+		name  string
+		args  []string
+		stdin string
+		want  string
+	}{
+		{"no id", []string{"find"}, "", "exactly one capture id"},
+		{"two ids", []string{"find", "a1b2c3d", "0badf00"}, "", "exactly one capture id"},
+		{"list flag", []string{"find", "-l", "a1b2c3d"}, "", "exactly one capture id"},
+		{"task flag", []string{"find", "-t", "a1b2c3d"}, "", "exactly one capture id"},
+		{"uppercase id", []string{"find", "A1B2C3D"}, "", "not a capture id"},
+		{"short id", []string{"find", "a1b2c3"}, "", "not a capture id"},
+		{"long id", []string{"find", "a1b2c3d4"}, "", "not a capture id"},
+		{"non-hex id", []string{"find", "zzzzzzz"}, "", "not a capture id"},
+		{"piped stdin", []string{"find", "a1b2c3d"}, "piped\n", "find takes no stdin"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vault := t.TempDir()
+			getenv := func(key string) string {
+				if key == "CAPTURE_VAULT" {
+					return vault
+				}
+				return ""
+			}
+			var stdout, stderr bytes.Buffer
+			err := run(tc.args, getenv, testClock, strings.NewReader(tc.stdin), &stdout, &stderr)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+			if stdout.Len() != 0 {
+				t.Errorf("stdout = %q, want empty", stdout.String())
+			}
+			if entries, readErr := os.ReadDir(vault); readErr != nil || len(entries) != 0 {
+				t.Errorf("rejected find touched the vault: %v, %v", entries, readErr)
+			}
+		})
+	}
+}
+
+// Find surfaces the same configuration errors as a capture and requires
+// nothing beyond them: a missing vault fails, an unset daily dir is fine.
+func TestRunFindConfigErrorsMatchCapture(t *testing.T) {
+	cases := []struct {
+		name      string
+		vaultMode string // "unset", "file", "dir"
+		dailyDir  string
+	}{
+		{"unset CAPTURE_VAULT", "unset", ""},
+		{"CAPTURE_VAULT not a directory", "file", ""},
+		{"missing CAPTURE_DAILY_DIR", "dir", "Missing"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vault := ""
+			if tc.vaultMode != "unset" {
+				vault = filepath.Join(t.TempDir(), "vault")
+				if tc.vaultMode == "file" {
+					if err := os.WriteFile(vault, []byte("x"), 0644); err != nil {
+						t.Fatal(err)
+					}
+				} else if err := os.Mkdir(vault, 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			getenv := func(key string) string {
+				switch key {
+				case "CAPTURE_VAULT":
+					return vault
+				case "CAPTURE_DAILY_DIR":
+					return tc.dailyDir
+				}
+				return ""
+			}
+			var stdout, stderr bytes.Buffer
+			err := run([]string{"find", "a1b2c3d"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr)
+			if err == nil {
+				t.Fatal("find succeeded with bad configuration")
+			}
+			if stdout.Len() != 0 {
+				t.Errorf("stdout = %q, want empty", stdout.String())
+			}
+		})
+	}
+}
+
+// Find honours CAPTURE_DAILY_FORMAT: only files named by that layout are read.
+func TestRunFindHonoursCustomDailyLayout(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		switch key {
+		case "CAPTURE_VAULT":
+			return vault
+		case "CAPTURE_DAILY_FORMAT":
+			return "02-01-2006"
+		}
+		return ""
+	}
+	custom := filepath.Join(vault, "14-10-2026.md")
+	if err := os.WriteFile(custom, []byte("- 09:00 | a1b2c3d | custom layout\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Default-layout name is not a daily note under the configured layout.
+	if err := os.WriteFile(filepath.Join(vault, "2026-10-14.md"), []byte("- 09:00 | a1b2c3d | ignored\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"find", "a1b2c3d"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(find): %v", err)
+	}
+	want := custom + ":1:- 09:00 | a1b2c3d | custom layout\n"
+	if stdout.String() != want {
+		t.Errorf("stdout = %q, want %q", stdout.String(), want)
+	}
+}
+
+// Find stays a command: the word itself is still capturable with -- or a flag.
+func TestRunFindWordRemainsCapturable(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"-- separator", []string{"--", "find", "a1b2c3d"}, "- 09:15 | find a1b2c3d\n"},
+		{"task flag before", []string{"-t", "find", "a1b2c3d"}, "- [ ] | 09:15 | find a1b2c3d\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vault := t.TempDir()
+			getenv := func(key string) string {
+				if key == "CAPTURE_VAULT" {
+					return vault
+				}
+				return ""
+			}
+			var stdout, stderr bytes.Buffer
+			if err := run(tc.args, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+				t.Fatalf("run(%v): %v", tc.args, err)
+			}
+			got, err := os.ReadFile(filepath.Join(vault, "2026-10-14.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if withoutIDs(string(got)) != tc.want {
+				t.Errorf("2026-10-14.md = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
