@@ -95,6 +95,7 @@ Details:
 - `-w` / `--week` extends `-l` to the past week: the last seven daily notes, oldest day first, each day under a `## YYYY-MM-DD` heading. Days with no captures are skipped. It requires `-l` and accepts no text, no stdin, and no `-t`.
 - `open` opens today's daily note in the Obsidian app, creating an empty note first when the day has none. It takes no flags, text, or stdin; use `capture -- open` to capture the word itself. It uses the same `CAPTURE_VAULT`, `CAPTURE_DAILY_DIR`, and `CAPTURE_DAILY_FORMAT` as a capture.
 - `find <id>` prints every capture whose id column equals `<id>` as `path:line:text`, oldest daily note first. It reads the daily notes in the configured directory across all days, ignores files whose name is not a daily note under `CAPTURE_DAILY_FORMAT`, and never writes. It takes exactly one id, no stdin, and no flags; no match prints nothing and exits 0, a malformed id is an error, and `capture -- find <text>` still captures the word.
+- `move` is the morning step: it finds the previous daily note — the newest daily note dated before today, however old — and moves its unfinished tasks into today's, verbatim: same `- [ ] ` prefix, same capture time, same capture id, so `capture find <id>` still calls them back. Each moved line is deleted from the source, whose other bytes (trailing newline included) are left alone; a source the move empties stays as an empty file. Checked tasks, notes, prose, headings and nested checkboxes never move. A second run is a no-op, and nothing to move prints nothing, exits 0 and creates no file for today. It takes no flags, text, or stdin, so `capture -- move` still captures the word.
 - Flags come before the text; a dash-word after the first word is captured as text.
 - A successful capture prints nothing and exits 0. Every error goes to stderr and exits 1.
 
@@ -134,6 +135,15 @@ $ capture -l -w
 
 ## 2026-10-14
 - 09:15 | c48e5f0 | today note
+```
+
+Moving the previous daily note's unfinished tasks into today prints each line
+that left the old note:
+
+```console
+$ capture move
+- [ ] | 08:10 | 0badf00 | call the dentist
+- [ ] | 18:30 | 1d3b6a4 | dentist tomorrow
 ```
 
 ## Development

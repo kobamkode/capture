@@ -52,6 +52,7 @@ func randomID() (string, error) {
 const helpText = `Usage: capture [flags] text...
        capture open
        capture find <id>
+       capture move
        echo "line" | capture
 
 Appends each capture as an entry to today's daily note in an Obsidian vault.
@@ -70,6 +71,16 @@ Commands:
         under CAPTURE_DAILY_FORMAT are ignored. No match is an empty result:
         no output, exit 0. Takes no flags, no stdin, and exactly one id. To
         capture the word itself, use -- : capture -- find <text>.
+  move
+        move the unfinished tasks of the previous daily note into today's:
+        append them verbatim, delete them from the source, and print what
+        moved. The previous daily note is the newest daily note dated before
+        today, however old; when it is missing or holds nothing unfinished
+        nothing moves: no output, exit 0, no file created. Moved tasks keep
+        their id and capture time, so capture find still calls them back.
+        Checked tasks, notes, prose and nested checkboxes stay where they are.
+        Takes no flags, text, or stdin. To capture the word itself, use -- :
+        capture -- move.
 
 Input rules:
   Arguments: all remaining words are joined with single spaces into one entry.
@@ -135,12 +146,13 @@ func version() string {
 }
 
 func runWithOpener(args []string, getenv func(string) string, now time.Time, stdin io.Reader, stdout, stderr io.Writer, open func(string) error) error {
-	// `capture open` and `capture find` are commands, not captures of the word
-	// "open" or "find". Each must be the first argument, so `capture -t open`
-	// and `capture -- open` still capture the text.
+	// `capture open`, `capture find` and `capture move` are commands, not
+	// captures of the words themselves. Each must be the first argument, so
+	// `capture -t open` and `capture -- move` still capture the text.
 	openMode := len(args) > 0 && args[0] == "open"
 	findMode := len(args) > 0 && args[0] == "find"
-	if openMode || findMode {
+	moveMode := len(args) > 0 && args[0] == "move"
+	if openMode || findMode || moveMode {
 		args = args[1:]
 	}
 
@@ -183,6 +195,12 @@ func runWithOpener(args []string, getenv func(string) string, now time.Time, std
 		if task || list || week || len(flags.Args()) != 1 {
 			return errors.New("find takes exactly one capture id")
 		}
+	} else if moveMode {
+		// Move takes no configuration beyond the environment: reject flags and
+		// text before reading stdin or touching the vault.
+		if task || list || week || len(flags.Args()) > 0 {
+			return errors.New("move takes no flags, text, or stdin")
+		}
 	} else if week && !list {
 		// Week is a listing modifier: alone it is a mistyped command, so fail
 		// loudly instead of capturing "-w text".
@@ -220,6 +238,10 @@ func runWithOpener(args []string, getenv func(string) string, now time.Time, std
 	} else if findMode {
 		if piped {
 			return errors.New("find takes no stdin")
+		}
+	} else if moveMode {
+		if piped {
+			return errors.New("move takes no stdin")
 		}
 	} else if list {
 		if text != "" || piped || task {
@@ -273,6 +295,9 @@ func runWithOpener(args []string, getenv func(string) string, now time.Time, std
 	}
 
 	path := filepath.Join(dir, name+".md")
+	if moveMode {
+		return moveTasks(dir, layout, now, path, stdout)
+	}
 	if openMode {
 		if err := ensureNote(path); err != nil {
 			return err
@@ -342,6 +367,29 @@ func appendToNote(path, line string) error {
 		err = cerr
 	}
 	return err
+}
+
+// rewriteNote replaces the Daily note at path with content through a temporary
+// file in the same directory renamed over it, so an interrupted write cannot
+// leave the note truncated. The note keeps existing even when content is empty.
+func rewriteNote(path, content string) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".capture-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // a no-op once the rename below succeeds
+	if _, err := io.WriteString(f, content); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // ensureNote creates an empty Daily note when it is missing, so opening the day
@@ -510,4 +558,98 @@ func listWeek(dir, layout string, now time.Time, stdout io.Writer) error {
 		}
 	}
 	return nil
+}
+
+// dateOf drops the clock so two days compare as calendar dates, whatever time
+// of day the layout parses or the clock reports.
+func dateOf(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// previousDailyNote returns the newest Daily note dated strictly before today,
+// however old. Filenames are parsed under layout instead of sorted as strings,
+// so a layout that does not start with the date still works and an old note
+// edited today is not promoted by its modification time. Ties on one date go
+// to the greater filename.
+func previousDailyNote(dir, layout string, now time.Time) (string, bool, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", false, err
+	}
+	today := dateOf(now)
+	best := ""
+	var bestDay time.Time
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".md") {
+			continue
+		}
+		parsed, err := time.Parse(layout, strings.TrimSuffix(name, ".md"))
+		if err != nil {
+			continue
+		}
+		day := dateOf(parsed)
+		if !day.Before(today) {
+			continue
+		}
+		if best == "" || day.After(bestDay) || day.Equal(bestDay) && name > best {
+			best, bestDay = name, day
+		}
+	}
+	if best == "" {
+		return "", false, nil
+	}
+	return filepath.Join(dir, best), true, nil
+}
+
+// splitLines keeps each line's trailing newline, so joining the result
+// reproduces the input byte for byte; the last line may have none.
+func splitLines(s string) []string {
+	var lines []string
+	for s != "" {
+		i := strings.IndexByte(s, '\n')
+		if i < 0 {
+			return append(lines, s)
+		}
+		lines = append(lines, s[:i+1])
+		s = s[i+1:]
+	}
+	return lines
+}
+
+// moveTasks drains the Previous daily note's unfinished Tasks into today's
+// Daily note: each movable line is appended verbatim and then deleted from the
+// source, leaving every other byte of it alone. Today's note is appended to
+// first and the source rewritten second, so an interruption duplicates a Task
+// at worst instead of losing one. Nothing movable means no output, no error
+// and no file created for today.
+func moveTasks(dir, layout string, now time.Time, todayPath string, stdout io.Writer) error {
+	source, ok, err := previousDailyNote(dir, layout, now)
+	if err != nil || !ok {
+		return err
+	}
+	b, err := os.ReadFile(source)
+	if err != nil {
+		return err
+	}
+	var kept, moved strings.Builder
+	for _, line := range splitLines(string(b)) {
+		text := strings.TrimSuffix(line, "\n")
+		if strings.HasPrefix(text, taskPrefix) {
+			moved.WriteString(text + "\n")
+			continue
+		}
+		kept.WriteString(line)
+	}
+	if moved.Len() == 0 {
+		return nil
+	}
+	if err := appendToNote(todayPath, moved.String()); err != nil {
+		return err
+	}
+	if err := rewriteNote(source, kept.String()); err != nil {
+		return err
+	}
+	_, err = io.WriteString(stdout, moved.String())
+	return err
 }
