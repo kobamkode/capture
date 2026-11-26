@@ -145,15 +145,24 @@ func version() string {
 	return "devel"
 }
 
+// stdinRefusals is the error each word-command gives when stdin is piped: the
+// text predates the shared guard and is pinned by tests, so it stays verbatim.
+var stdinRefusals = map[string]string{
+	"open": "open takes no flags, text, or stdin",
+	"find": "find takes no stdin",
+	"move": "move takes no stdin",
+}
+
 func runWithOpener(args []string, getenv func(string) string, now time.Time, stdin io.Reader, stdout, stderr io.Writer, open func(string) error) error {
 	// `capture open`, `capture find` and `capture move` are commands, not
 	// captures of the words themselves. Each must be the first argument, so
 	// `capture -t open` and `capture -- move` still capture the text.
-	openMode := len(args) > 0 && args[0] == "open"
-	findMode := len(args) > 0 && args[0] == "find"
-	moveMode := len(args) > 0 && args[0] == "move"
-	if openMode || findMode || moveMode {
-		args = args[1:]
+	command := ""
+	if len(args) > 0 {
+		switch args[0] {
+		case "open", "find", "move":
+			command, args = args[0], args[1:]
+		}
 	}
 
 	flags := flag.NewFlagSet("capture", flag.ContinueOnError)
@@ -183,28 +192,25 @@ func runWithOpener(args []string, getenv func(string) string, now time.Time, std
 		return nil
 	}
 
-	if openMode {
-		// Open takes no configuration beyond the environment: reject flags and
-		// text before reading stdin or touching the vault.
+	// A command takes no configuration beyond the environment: reject flags
+	// and text before reading stdin or touching the vault. Find is the one
+	// exception, taking exactly one id and nothing else, so a mistyped call
+	// fails instead of being treated as the text "find".
+	switch command {
+	case "open", "move":
 		if task || list || week || len(flags.Args()) > 0 {
-			return errors.New("open takes no flags, text, or stdin")
+			return fmt.Errorf("%s takes no flags, text, or stdin", command)
 		}
-	} else if findMode {
-		// Find takes exactly one id and nothing else: a mistyped call must fail
-		// loudly instead of being treated as the text "find".
+	case "find":
 		if task || list || week || len(flags.Args()) != 1 {
 			return errors.New("find takes exactly one capture id")
 		}
-	} else if moveMode {
-		// Move takes no configuration beyond the environment: reject flags and
-		// text before reading stdin or touching the vault.
-		if task || list || week || len(flags.Args()) > 0 {
-			return errors.New("move takes no flags, text, or stdin")
+	default:
+		if week && !list {
+			// Week is a listing modifier: alone it is a mistyped command, so
+			// fail loudly instead of capturing "-w text".
+			return errors.New("week mode requires -l")
 		}
-	} else if week && !list {
-		// Week is a listing modifier: alone it is a mistyped command, so fail
-		// loudly instead of capturing "-w text".
-		return errors.New("week mode requires -l")
 	}
 
 	// A terminal stdin must not be read: io.ReadAll would block until EOF
@@ -228,20 +234,13 @@ func runWithOpener(args []string, getenv func(string) string, now time.Time, std
 		piped = strings.TrimSpace(string(raw)) != ""
 	}
 
-	// List and open modes accept no capture input: a mistyped command must fail
-	// loudly instead of silently dropping the input.
+	// List and the command modes accept no capture input: a mistyped call must
+	// fail loudly instead of silently dropping the input. Each command keeps
+	// the error text it has always given.
 	text := strings.Join(flags.Args(), " ")
-	if openMode {
+	if msg, ok := stdinRefusals[command]; ok {
 		if piped {
-			return errors.New("open takes no flags, text, or stdin")
-		}
-	} else if findMode {
-		if piped {
-			return errors.New("find takes no stdin")
-		}
-	} else if moveMode {
-		if piped {
-			return errors.New("move takes no stdin")
+			return errors.New(msg)
 		}
 	} else if list {
 		if text != "" || piped || task {
@@ -292,15 +291,15 @@ func runWithOpener(args []string, getenv func(string) string, now time.Time, std
 
 	// Find is a lookup across the stored days rather than today's note: it
 	// reads the directory and never creates or writes anything.
-	if findMode {
+	if command == "find" {
 		return findCaptures(notes, flags.Args()[0], stdout)
 	}
 
 	path := notes.notePath(now)
-	if moveMode {
+	if command == "move" {
 		return moveTasks(notes, stdout)
 	}
-	if openMode {
+	if command == "open" {
 		if err := ensureNote(path); err != nil {
 			return err
 		}
