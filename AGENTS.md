@@ -8,6 +8,10 @@ Issues live in the local beads database, managed with the `bd` CLI. See `docs/ag
 
 Five canonical roles, label string equal to role name. See `docs/agents/triage-labels.md`.
 
+### Commits
+
+Conventional Commits for every message: `type(scope): summary`. See `docs/agents/commits.md`.
+
 ### Domain docs
 
 Single-context: `GLOSSARY.md` + `docs/adr/` at repo root. See `docs/agents/domain.md`.

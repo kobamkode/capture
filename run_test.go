@@ -1614,3 +1614,659 @@ func TestRunFindWordRemainsCapturable(t *testing.T) {
 		})
 	}
 }
+
+// A Move drains the Previous daily note of its unfinished Tasks: they arrive in
+// today's note in source order, verbatim, and leave the source; checked Tasks,
+// Notes, prose, headings and nested checkboxes stay where they are. Today's
+// existing content is kept and its missing trailing newline completed first.
+func TestRunMoveDrainsUnfinishedTasksIntoToday(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+	source := filepath.Join(vault, "2026-10-12.md")
+	sourceBody := "# Daily 2026-10-12\n" +
+		"\n" +
+		"- 08:00 | a1b2c3d | morning note\n" +
+		"- [ ] | 08:10 | 0badf00 | unfinished task\n" +
+		"- [x] | 08:20 | 1c2d3e4 | checked task\n" +
+		"- [X] | 08:25 | 2d3e4f5 | checked uppercase task\n" +
+		"  - [ ] | 08:30 | 3e4f5a6 | nested task\n" +
+		"- [ ] | 08:40 | 4f5a6b7 | second unfinished\n" +
+		"plain prose, not a capture\n" +
+		// A hand-written line opening with the task prefix is movable too, so
+		// parking an idea needs another shape than an unchecked box.
+		"- [ ] hand-written task without columns\n"
+	if err := os.WriteFile(source, []byte(sourceBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+	today := filepath.Join(vault, "2026-10-14.md")
+	// No trailing newline: the append must complete it before the moved lines.
+	if err := os.WriteFile(today, []byte("- 07:00 | c48e5f0 | earlier today"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"move"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(move): %v", err)
+	}
+	wantStdout := "- [ ] | 08:10 | 0badf00 | unfinished task\n" +
+		"- [ ] | 08:40 | 4f5a6b7 | second unfinished\n" +
+		"- [ ] hand-written task without columns\n"
+	if stdout.String() != wantStdout {
+		t.Errorf("stdout = %q, want %q", stdout.String(), wantStdout)
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("stderr = %q, want empty", stderr.String())
+	}
+	wantToday := "- 07:00 | c48e5f0 | earlier today\n" + wantStdout
+	if got, err := os.ReadFile(today); err != nil || string(got) != wantToday {
+		t.Errorf("today's note = %q, %v; want %q", got, err, wantToday)
+	}
+	wantSource := "# Daily 2026-10-12\n" +
+		"\n" +
+		"- 08:00 | a1b2c3d | morning note\n" +
+		"- [x] | 08:20 | 1c2d3e4 | checked task\n" +
+		"- [X] | 08:25 | 2d3e4f5 | checked uppercase task\n" +
+		"  - [ ] | 08:30 | 3e4f5a6 | nested task\n" +
+		"plain prose, not a capture\n"
+	if got, err := os.ReadFile(source); err != nil || string(got) != wantSource {
+		t.Errorf("source = %q, %v; want %q", got, err, wantSource)
+	}
+}
+
+// A moved Task keeps its id and capture time, so find calls it back from its
+// new day and no longer from the source.
+func TestRunMoveKeepsCaptureIDAndTime(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+	task := "- [ ] | 08:10 | 0badf00 | call the dentist\n"
+	source := filepath.Join(vault, "2026-10-13.md")
+	if err := os.WriteFile(source, []byte("# 13th\n"+task), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"move"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(move): %v", err)
+	}
+	if stdout.String() != task {
+		t.Errorf("stdout = %q, want %q", stdout.String(), task)
+	}
+
+	stdout.Reset()
+	if err := run([]string{"find", "0badf00"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(find): %v", err)
+	}
+	want := filepath.Join(vault, "2026-10-14.md") + ":1:" + strings.TrimSuffix(task, "\n") + "\n"
+	if stdout.String() != want {
+		t.Errorf("find after move = %q, want %q", stdout.String(), want)
+	}
+}
+
+// Running twice changes nothing the second time: the source has no unfinished
+// Task left, so the second Move is silent and both notes are untouched.
+func TestRunMoveSecondRunIsNoOp(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+	source := filepath.Join(vault, "2026-10-13.md")
+	sourceBody := "# Daily\n- [ ] | 08:10 | 0badf00 | move me\n- 08:20 | e02f7d9 | stay here\n"
+	if err := os.WriteFile(source, []byte(sourceBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"move"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("first run(move): %v", err)
+	}
+	today := filepath.Join(vault, "2026-10-14.md")
+	wantSource := "# Daily\n- 08:20 | e02f7d9 | stay here\n"
+	wantToday := "- [ ] | 08:10 | 0badf00 | move me\n"
+	if got, err := os.ReadFile(source); err != nil || string(got) != wantSource {
+		t.Fatalf("source after first move = %q, %v; want %q", got, err, wantSource)
+	}
+	if got, err := os.ReadFile(today); err != nil || string(got) != wantToday {
+		t.Fatalf("today after first move = %q, %v; want %q", got, err, wantToday)
+	}
+
+	stdout.Reset()
+	if err := run([]string{"move"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("second run(move): %v", err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Errorf("second run stdout = %q, stderr = %q, want both empty", stdout.String(), stderr.String())
+	}
+	if got, err := os.ReadFile(source); err != nil || string(got) != wantSource {
+		t.Errorf("second run changed the source: %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(today); err != nil || string(got) != wantToday {
+		t.Errorf("second run changed today's note: %q, %v", got, err)
+	}
+}
+
+// No Previous daily note, a daily note with nothing movable, or only a
+// future-dated daily note are all empty results: no output, exit 0, no file
+// created for today. Exactly one daily note is read, so a newer one without
+// Tasks hides an older one that holds them.
+func TestRunMoveEmptyResults(t *testing.T) {
+	cases := []struct {
+		name  string
+		files map[string]string
+	}{
+		{
+			name:  "no previous daily note",
+			files: map[string]string{},
+		},
+		{
+			name: "previous daily note holds nothing movable",
+			files: map[string]string{
+				"2026-10-13.md": "# Daily\n\n- 08:00 | a1b2c3d | a note\n- [x] | 08:10 | 0badf00 | done\n",
+			},
+		},
+		{
+			name: "only a future-dated daily note exists",
+			files: map[string]string{
+				"2026-10-20.md": "- [ ] | 08:10 | 0badf00 | planned ahead\n",
+			},
+		},
+		{
+			name: "newest older daily note has no tasks, an older one has",
+			files: map[string]string{
+				"2026-10-10.md": "- [ ] | 08:00 | 1c2d3e4 | stranded older task\n",
+				"2026-10-13.md": "- 08:00 | a1b2c3d | only a note\n",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vault := t.TempDir()
+			getenv := func(key string) string {
+				if key == "CAPTURE_VAULT" {
+					return vault
+				}
+				return ""
+			}
+			for name, body := range tc.files {
+				if err := os.WriteFile(filepath.Join(vault, name), []byte(body), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var stdout, stderr bytes.Buffer
+			if err := run([]string{"move"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+				t.Fatalf("run(move): %v", err)
+			}
+			if stdout.Len() != 0 || stderr.Len() != 0 {
+				t.Errorf("stdout = %q, stderr = %q, want both empty", stdout.String(), stderr.String())
+			}
+			for name, body := range tc.files {
+				if got, err := os.ReadFile(filepath.Join(vault, name)); err != nil || string(got) != body {
+					t.Errorf("%s changed: %q, %v; want %q", name, got, err, body)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(vault, "2026-10-14.md")); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("today's note was created, want none: %v", err)
+			}
+			entries, err := os.ReadDir(vault)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != len(tc.files) {
+				t.Errorf("vault entries = %d, want %d (no leftovers)", len(entries), len(tc.files))
+			}
+		})
+	}
+}
+
+// The source is the newest Daily note dated before today, however old: a
+// future-dated daily note and any daily note older than the newest one before
+// today are left alone, and today's own Task is never a source.
+func TestRunMoveSelectsNewestDailyNoteBeforeToday(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+	files := map[string]string{
+		"2026-09-23.md": "- [ ] | 07:00 | 5a1c8b3 | three weeks old\n",
+		"2026-10-12.md": "# 12th\n- [ ] | 08:10 | 0badf00 | move me\n- 08:20 | e02f7d9 | note stays\n",
+		"2026-10-14.md": "- [ ] | 07:30 | 7f7f7f7 | today's own task\n",
+		"2026-10-20.md": "- [ ] | 08:00 | 4f5a6b7 | future plan\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(vault, name), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// An old note edited today must not be promoted by its modification time.
+	touched := time.Date(2026, 10, 14, 8, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(filepath.Join(vault, "2026-09-23.md"), touched, touched); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"move"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(move): %v", err)
+	}
+	moved := "- [ ] | 08:10 | 0badf00 | move me\n"
+	if stdout.String() != moved {
+		t.Errorf("stdout = %q, want %q", stdout.String(), moved)
+	}
+	if got, err := os.ReadFile(filepath.Join(vault, "2026-10-14.md")); err != nil || string(got) != files["2026-10-14.md"]+moved {
+		t.Errorf("today's note = %q, %v; want the moved line appended", got, err)
+	}
+	wantSource := "# 12th\n- 08:20 | e02f7d9 | note stays\n"
+	if got, err := os.ReadFile(filepath.Join(vault, "2026-10-12.md")); err != nil || string(got) != wantSource {
+		t.Errorf("source = %q, %v; want %q", got, err, wantSource)
+	}
+	for _, name := range []string{"2026-09-23.md", "2026-10-20.md"} {
+		if got, err := os.ReadFile(filepath.Join(vault, name)); err != nil || string(got) != files[name] {
+			t.Errorf("%s changed: %q, %v", name, got, err)
+		}
+	}
+}
+
+// Filenames are parsed, not sorted as strings: with a layout whose month comes
+// first, string order would pick September over October.
+func TestRunMoveParsesFilenamesNotStringOrder(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		switch key {
+		case "CAPTURE_VAULT":
+			return vault
+		case "CAPTURE_DAILY_FORMAT":
+			return "January 2, 2006"
+		}
+		return ""
+	}
+	older := "- [ ] | 07:00 | 5a1c8b3 | september task\n"
+	newer := "- [ ] | 08:10 | 0badf00 | october task\n"
+	if err := os.WriteFile(filepath.Join(vault, "September 30, 2026.md"), []byte(older), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vault, "October 12, 2026.md"), []byte(newer), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"move"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(move): %v", err)
+	}
+	if stdout.String() != newer {
+		t.Errorf("stdout = %q, want the October task only", stdout.String())
+	}
+	if got, err := os.ReadFile(filepath.Join(vault, "September 30, 2026.md")); err != nil || string(got) != older {
+		t.Errorf("September note changed: %q, %v", got, err)
+	}
+	wantToday := "October 14, 2026.md"
+	if got, err := os.ReadFile(filepath.Join(vault, wantToday)); err != nil || string(got) != newer {
+		t.Errorf("%s = %q, %v; want %q", wantToday, got, err, newer)
+	}
+}
+
+// Two daily notes dated the same day tie on the greater filename, not on which
+// one happens to be newer on disk.
+func TestRunMoveTieOnOneDateGoesToGreaterFilename(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		switch key {
+		case "CAPTURE_VAULT":
+			return vault
+		case "CAPTURE_DAILY_FORMAT":
+			return "January 2, 2006 15"
+		}
+		return ""
+	}
+	earlier := filepath.Join(vault, "October 12, 2026 08.md")
+	later := filepath.Join(vault, "October 12, 2026 09.md")
+	earlierBody := "- [ ] | 07:00 | 5a1c8b3 | earlier same day\n"
+	laterBody := "- [ ] | 08:10 | 0badf00 | later same day\n"
+	if err := os.WriteFile(earlier, []byte(earlierBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(later, []byte(laterBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"move"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(move): %v", err)
+	}
+	if stdout.String() != laterBody {
+		t.Errorf("stdout = %q, want the greater filename's task", stdout.String())
+	}
+	if got, err := os.ReadFile(filepath.Join(vault, "October 14, 2026 09.md")); err != nil || string(got) != laterBody {
+		t.Errorf("today's note = %q, %v; want the greater filename's task", got, err)
+	}
+	if got, err := os.ReadFile(earlier); err != nil || string(got) != earlierBody {
+		t.Errorf("lesser filename changed: %q, %v", got, err)
+	}
+	// The greater filename is the source, so its task left it behind.
+	if got, err := os.ReadFile(later); err != nil || len(got) != 0 {
+		t.Errorf("greater filename = %q, %v; want an existing empty file", got, err)
+	}
+}
+
+// Monday's Move reaches back over a skipped Sunday to Saturday's note, and no
+// Sunday file is required or created.
+func TestRunMoveSpansWeekend(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+	monday := time.Date(2026, 10, 19, 9, 15, 0, 0, time.FixedZone("UTC+7", 7*3600))
+	saturday := "- [ ] | 10:00 | 5a1c8b3 | saturday errand\n- [x] | 11:00 | 1c2d3e4 | saturday done\n"
+	if err := os.WriteFile(filepath.Join(vault, "2026-10-17.md"), []byte(saturday), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"move"}, getenv, monday, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(move): %v", err)
+	}
+	moved := "- [ ] | 10:00 | 5a1c8b3 | saturday errand\n"
+	if stdout.String() != moved {
+		t.Errorf("stdout = %q, want %q", stdout.String(), moved)
+	}
+	if got, err := os.ReadFile(filepath.Join(vault, "2026-10-19.md")); err != nil || string(got) != moved {
+		t.Errorf("Monday's note = %q, %v; want %q", got, err, moved)
+	}
+	wantSource := "- [x] | 11:00 | 1c2d3e4 | saturday done\n"
+	if got, err := os.ReadFile(filepath.Join(vault, "2026-10-17.md")); err != nil || string(got) != wantSource {
+		t.Errorf("Saturday's note = %q, %v; want %q", got, err, wantSource)
+	}
+	for _, name := range []string{"2026-10-18.md", "2026-10-20.md"} {
+		if _, err := os.Stat(filepath.Join(vault, name)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s was created, want none: %v", name, err)
+		}
+	}
+}
+
+// A source the Move empties stays as an empty file: notes are never deleted.
+func TestRunMoveEmptiedSourceRemainsAnEmptyFile(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+	source := filepath.Join(vault, "2026-10-13.md")
+	moved := "- [ ] | 08:10 | 0badf00 | last task of the day\n"
+	if err := os.WriteFile(source, []byte(moved), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"move"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(move): %v", err)
+	}
+	if got, err := os.ReadFile(source); err != nil || len(got) != 0 {
+		t.Errorf("source = %q, %v; want an existing empty file", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(vault, "2026-10-14.md")); err != nil || string(got) != moved {
+		t.Errorf("today's note = %q, %v; want %q", got, err, moved)
+	}
+}
+
+// The rewrite keeps the source's own permissions: a private 0600 note stays
+// private after a Move instead of coming back world readable.
+func TestRunMovePreservesSourceFileMode(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+	source := filepath.Join(vault, "2026-10-13.md")
+	body := "- [ ] | 08:10 | 0badf00 | private task\n- 08:20 | e02f7d9 | stays\n"
+	if err := os.WriteFile(source, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// WriteFile's mode is filtered by the umask, so pin it explicitly.
+	if err := os.Chmod(source, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"move"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(move): %v", err)
+	}
+	info, err := os.Stat(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Errorf("source mode = %04o, want 0600", got)
+	}
+}
+
+// A source without a trailing newline is preserved as it was: removing a line
+// never adds a terminator to the last line left behind, and a moved final line
+// still arrives complete on its own line.
+func TestRunMovePreservesMissingTrailingNewline(t *testing.T) {
+	cases := []struct {
+		name       string
+		source     string
+		wantSource string
+		wantToday  string
+	}{
+		{
+			name:       "moved task is the last line without a newline",
+			source:     "- 08:00 | a1b2c3d | a note\n- [ ] | 08:10 | 0badf00 | last task",
+			wantSource: "- 08:00 | a1b2c3d | a note\n",
+			wantToday:  "- [ ] | 08:10 | 0badf00 | last task\n",
+		},
+		{
+			name:       "kept note is the last line without a newline",
+			source:     "- [ ] | 08:10 | 0badf00 | a task\n- 08:20 | e02f7d9 | last note",
+			wantSource: "- 08:20 | e02f7d9 | last note",
+			wantToday:  "- [ ] | 08:10 | 0badf00 | a task\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vault := t.TempDir()
+			getenv := func(key string) string {
+				if key == "CAPTURE_VAULT" {
+					return vault
+				}
+				return ""
+			}
+			source := filepath.Join(vault, "2026-10-13.md")
+			if err := os.WriteFile(source, []byte(tc.source), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			var stdout, stderr bytes.Buffer
+			if err := run([]string{"move"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+				t.Fatalf("run(move): %v", err)
+			}
+			if got, err := os.ReadFile(source); err != nil || string(got) != tc.wantSource {
+				t.Errorf("source = %q, %v; want %q", got, err, tc.wantSource)
+			}
+			if got, err := os.ReadFile(filepath.Join(vault, "2026-10-14.md")); err != nil || string(got) != tc.wantToday {
+				t.Errorf("today's note = %q, %v; want %q", got, err, tc.wantToday)
+			}
+		})
+	}
+}
+
+// CAPTURE_DAILY_FORMAT names both the file read and the file written; a
+// default-layout name is not a daily note under the configured layout.
+func TestRunMoveHonoursCustomDailyLayout(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		switch key {
+		case "CAPTURE_VAULT":
+			return vault
+		case "CAPTURE_DAILY_FORMAT":
+			return "02-01-2006"
+		}
+		return ""
+	}
+	stray := "- [ ] | 08:10 | 0badf00 | wrong layout, never a source\n"
+	if err := os.WriteFile(filepath.Join(vault, "2026-10-13.md"), []byte(stray), 0644); err != nil {
+		t.Fatal(err)
+	}
+	moved := "- [ ] | 09:10 | 1c2d3e4 | custom layout task\n"
+	if err := os.WriteFile(filepath.Join(vault, "13-10-2026.md"), []byte(moved), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"move"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(move): %v", err)
+	}
+	if stdout.String() != moved {
+		t.Errorf("stdout = %q, want %q", stdout.String(), moved)
+	}
+	if got, err := os.ReadFile(filepath.Join(vault, "14-10-2026.md")); err != nil || string(got) != moved {
+		t.Errorf("14-10-2026.md = %q, %v; want %q", got, err, moved)
+	}
+	if _, err := os.Stat(filepath.Join(vault, "2026-10-14.md")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("default-layout today's note was created: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(vault, "2026-10-13.md")); err != nil || string(got) != stray {
+		t.Errorf("wrong-layout note changed: %q, %v", got, err)
+	}
+}
+
+// Move refuses flags, text and piped stdin before it touches the vault.
+func TestRunMoveRejectsCaptureInput(t *testing.T) {
+	cases := []struct {
+		name  string
+		args  []string
+		stdin string
+		want  string
+	}{
+		{"task flag", []string{"move", "-t"}, "", "move takes no flags, text, or stdin"},
+		{"list flag", []string{"move", "-l"}, "", "move takes no flags, text, or stdin"},
+		{"week flag", []string{"move", "-w"}, "", "move takes no flags, text, or stdin"},
+		{"positional text", []string{"move", "later"}, "", "move takes no flags, text, or stdin"},
+		{"flag and text", []string{"move", "-t", "later"}, "", "move takes no flags, text, or stdin"},
+		{"piped stdin", []string{"move"}, "piped\n", "move takes no stdin"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vault := t.TempDir()
+			getenv := func(key string) string {
+				if key == "CAPTURE_VAULT" {
+					return vault
+				}
+				return ""
+			}
+			var stdout, stderr bytes.Buffer
+			err := run(tc.args, getenv, testClock, strings.NewReader(tc.stdin), &stdout, &stderr)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+			if stdout.Len() != 0 {
+				t.Errorf("stdout = %q, want empty", stdout.String())
+			}
+			if entries, readErr := os.ReadDir(vault); readErr != nil || len(entries) != 0 {
+				t.Errorf("rejected move touched the vault: %v, %v", entries, readErr)
+			}
+		})
+	}
+}
+
+// Today's note is appended to before the source is rewritten: when the append
+// fails, the source still holds its unfinished Task.
+func TestRunMoveLeavesSourceIntactWhenAppendFails(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+	source := filepath.Join(vault, "2026-10-13.md")
+	sourceBody := "- [ ] | 08:10 | 0badf00 | keep me\n"
+	if err := os.WriteFile(source, []byte(sourceBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// A directory where today's note should be makes the append fail.
+	if err := os.Mkdir(filepath.Join(vault, "2026-10-14.md"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"move"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err == nil {
+		t.Fatal("move succeeded although today's note could not be written")
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("stdout = %q, want empty", stdout.String())
+	}
+	if got, err := os.ReadFile(source); err != nil || string(got) != sourceBody {
+		t.Errorf("source = %q, %v; want it unchanged", got, err)
+	}
+}
+
+// Move stays a command: the word itself is still capturable with -- or a flag.
+func TestRunMoveWordRemainsCapturable(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"-- separator", []string{"--", "move"}, "- 09:15 | move\n"},
+		{"task flag before", []string{"-t", "move"}, "- [ ] | 09:15 | move\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vault := t.TempDir()
+			getenv := func(key string) string {
+				if key == "CAPTURE_VAULT" {
+					return vault
+				}
+				return ""
+			}
+			var stdout, stderr bytes.Buffer
+			if err := run(tc.args, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+				t.Fatalf("run(%v): %v", tc.args, err)
+			}
+			got, err := os.ReadFile(filepath.Join(vault, "2026-10-14.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if withoutIDs(string(got)) != tc.want {
+				t.Errorf("2026-10-14.md = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// --help documents the Move beside open and find.
+func TestRunMoveHelpDocumentsCommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"--help"}, func(string) string { return "" }, testClock,
+		strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(--help) returned %v, want nil", err)
+	}
+	help := stdout.String()
+	for _, want := range []string{"capture move", "previous daily note", "unfinished tasks"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("--help output missing %q:\n%s", want, help)
+		}
+	}
+}
