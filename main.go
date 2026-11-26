@@ -371,7 +371,8 @@ func appendToNote(path, line string) error {
 
 // rewriteNote replaces the Daily note at path with content through a temporary
 // file in the same directory renamed over it, so an interrupted write cannot
-// leave the note truncated. The note keeps existing even when content is empty.
+// leave the note truncated. The note keeps existing even when content is empty,
+// and keeps its own permissions: a 0600 note must not come back world readable.
 func rewriteNote(path, content string) error {
 	f, err := os.CreateTemp(filepath.Dir(path), ".capture-*.tmp")
 	if err != nil {
@@ -383,10 +384,20 @@ func rewriteNote(path, content string) error {
 		f.Close()
 		return err
 	}
+	// Sync before the rename, or a crash can publish a zero-length note.
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
 	if err := f.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp, 0644); err != nil {
+	// A missing note (stat error) falls back to the create default.
+	mode := fs.FileMode(0644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	}
+	if err := os.Chmod(tmp, mode); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

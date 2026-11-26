@@ -2027,6 +2027,39 @@ func TestRunMoveEmptiedSourceRemainsAnEmptyFile(t *testing.T) {
 	}
 }
 
+// The rewrite keeps the source's own permissions: a private 0600 note stays
+// private after a Move instead of coming back world readable.
+func TestRunMovePreservesSourceFileMode(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+	source := filepath.Join(vault, "2026-10-13.md")
+	body := "- [ ] | 08:10 | 0badf00 | private task\n- 08:20 | e02f7d9 | stays\n"
+	if err := os.WriteFile(source, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// WriteFile's mode is filtered by the umask, so pin it explicitly.
+	if err := os.Chmod(source, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"move"}, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run(move): %v", err)
+	}
+	info, err := os.Stat(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Errorf("source mode = %04o, want 0600", got)
+	}
+}
+
 // A source without a trailing newline is preserved as it was: removing a line
 // never adds a terminator to the last line left behind, and a moved final line
 // still arrives complete on its own line.
