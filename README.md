@@ -80,8 +80,10 @@ capture -l -w                # print the past week's captures under day headings
 capture --list --week        # same as -l -w
 capture open                 # open today's daily note in Obsidian
 capture find <id>            # print every capture with that id: path:line:text
+capture move                 # move the previous daily note's unfinished tasks into today's
 capture -- open              # capture the word "open"
 capture -- find <text>       # capture the word "find"
+capture -- move              # capture the word "move"
 capture --version            # print version and exit
 ```
 
