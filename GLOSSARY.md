@@ -20,6 +20,14 @@ _Avoid_: todo, to-do, action item
 The dated markdown file in the Obsidian vault that accumulates every capture for one calendar day.
 _Avoid_: journal, daily file, log
 
+**Previous daily note**:
+The most recent **Daily note** dated before today, whatever its date — the source a **Move** drains. Days without a note simply do not exist for it.
+_Avoid_: last file, yesterday's note, latest note
+
+**Move**:
+The act of taking the unfinished **Tasks** of the **Previous daily note** into today's **Daily note**, where each arrives as the same Task: same id, same capture time, same text.
+_Avoid_: rollover, carry-over, migration, transfer
+
 **Capture id**:
 The seven hex characters between pipes in a rendered line (`- 09:15 | 0b17a3b | text`), the shape of a git short hash, unique within a Daily note; `capture find <id>` calls the capture back.
 _Avoid_: hash, uuid, key
