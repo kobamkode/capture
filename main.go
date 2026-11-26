@@ -288,15 +288,17 @@ func runWithOpener(args []string, getenv func(string) string, now time.Time, std
 		return fmt.Errorf("CAPTURE_DAILY_FORMAT is not a valid Go time layout: %s", layout)
 	}
 
+	notes := dailyNotes{dir: dir, layout: layout, now: now}
+
 	// Find is a lookup across the stored days rather than today's note: it
 	// reads the directory and never creates or writes anything.
 	if findMode {
-		return findCaptures(dir, layout, flags.Args()[0], stdout)
+		return findCaptures(notes, flags.Args()[0], stdout)
 	}
 
-	path := filepath.Join(dir, name+".md")
+	path := notes.notePath(now)
 	if moveMode {
-		return moveTasks(dir, layout, now, path, stdout)
+		return moveTasks(notes, stdout)
 	}
 	if openMode {
 		if err := ensureNote(path); err != nil {
@@ -306,7 +308,7 @@ func runWithOpener(args []string, getenv func(string) string, now time.Time, std
 	}
 	if list {
 		if week {
-			return listWeek(dir, layout, now, stdout)
+			return listWeek(notes, stdout)
 		}
 		return listCaptures(path, stdout)
 	}
@@ -501,16 +503,30 @@ var idColumn = regexp.MustCompile(
 		`|- \[[xX]\] \| \d{2}:\d{2})` +
 		regexp.QuoteMeta(colSep) + `([0-9a-f]{7})` + regexp.QuoteMeta(colSep))
 
+// dailyNotes is where the Daily notes live, how their filenames are laid out
+// and which day counts as today: the three facts every command that walks the
+// vault needs together.
+type dailyNotes struct {
+	dir    string
+	layout string
+	now    time.Time
+}
+
+// notePath names the Daily note for one day under the configured layout.
+func (d dailyNotes) notePath(day time.Time) string {
+	return filepath.Join(d.dir, day.Format(d.layout)+".md")
+}
+
 // findCaptures prints every capture whose id column equals id, as
 // "path:line:text", oldest daily note first. Only files named by the daily
 // layout are read, so unrelated Markdown in the vault cannot supply a hit and
 // a misconfigured vault is not swept. A missing id is an empty result: no
 // output, no error, nothing created.
-func findCaptures(dir, layout, id string, stdout io.Writer) error {
+func findCaptures(notes dailyNotes, id string, stdout io.Writer) error {
 	if !findID.MatchString(id) {
 		return fmt.Errorf("not a capture id (seven lowercase hex characters): %s", id)
 	}
-	entries, err := os.ReadDir(dir)
+	entries, err := os.ReadDir(notes.dir)
 	if err != nil {
 		return err
 	}
@@ -519,10 +535,10 @@ func findCaptures(dir, layout, id string, stdout io.Writer) error {
 		if entry.IsDir() || !strings.HasSuffix(name, ".md") {
 			continue
 		}
-		if _, err := time.Parse(layout, strings.TrimSuffix(name, ".md")); err != nil {
+		if _, err := time.Parse(notes.layout, strings.TrimSuffix(name, ".md")); err != nil {
 			continue
 		}
-		path := filepath.Join(dir, name)
+		path := filepath.Join(notes.dir, name)
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -553,10 +569,10 @@ func listCaptures(path string, stdout io.Writer) error {
 // under a "## YYYY-MM-DD" heading; days without captures are skipped, so a
 // missing Daily note is an empty result. Filenames follow the configured
 // daily layout, headings use the canonical date.
-func listWeek(dir, layout string, now time.Time, stdout io.Writer) error {
+func listWeek(notes dailyNotes, stdout io.Writer) error {
 	for i := 6; i >= 0; i-- {
-		day := now.AddDate(0, 0, -i)
-		lines, err := captureLines(filepath.Join(dir, day.Format(layout)+".md"))
+		day := notes.now.AddDate(0, 0, -i)
+		lines, err := captureLines(notes.notePath(day))
 		if err != nil {
 			return err
 		}
@@ -582,12 +598,12 @@ func dateOf(t time.Time) time.Time {
 // so a layout that does not start with the date still works and an old note
 // edited today is not promoted by its modification time. Ties on one date go
 // to the greater filename.
-func previousDailyNote(dir, layout string, now time.Time) (string, bool, error) {
-	entries, err := os.ReadDir(dir)
+func previousDailyNote(notes dailyNotes) (string, bool, error) {
+	entries, err := os.ReadDir(notes.dir)
 	if err != nil {
 		return "", false, err
 	}
-	today := dateOf(now)
+	today := dateOf(notes.now)
 	best := ""
 	var bestDay time.Time
 	for _, entry := range entries {
@@ -595,7 +611,7 @@ func previousDailyNote(dir, layout string, now time.Time) (string, bool, error) 
 		if entry.IsDir() || !strings.HasSuffix(name, ".md") {
 			continue
 		}
-		parsed, err := time.Parse(layout, strings.TrimSuffix(name, ".md"))
+		parsed, err := time.Parse(notes.layout, strings.TrimSuffix(name, ".md"))
 		if err != nil {
 			continue
 		}
@@ -610,7 +626,7 @@ func previousDailyNote(dir, layout string, now time.Time) (string, bool, error) 
 	if best == "" {
 		return "", false, nil
 	}
-	return filepath.Join(dir, best), true, nil
+	return filepath.Join(notes.dir, best), true, nil
 }
 
 // splitLines keeps each line's trailing newline, so joining the result
@@ -634,8 +650,8 @@ func splitLines(s string) []string {
 // first and the source rewritten second, so an interruption duplicates a Task
 // at worst instead of losing one. Nothing movable means no output, no error
 // and no file created for today.
-func moveTasks(dir, layout string, now time.Time, todayPath string, stdout io.Writer) error {
-	source, ok, err := previousDailyNote(dir, layout, now)
+func moveTasks(notes dailyNotes, stdout io.Writer) error {
+	source, ok, err := previousDailyNote(notes)
 	if err != nil || !ok {
 		return err
 	}
@@ -655,7 +671,7 @@ func moveTasks(dir, layout string, now time.Time, todayPath string, stdout io.Wr
 	if moved.Len() == 0 {
 		return nil
 	}
-	if err := appendToNote(todayPath, moved.String()); err != nil {
+	if err := appendToNote(notes.notePath(notes.now), moved.String()); err != nil {
 		return err
 	}
 	if err := rewriteNote(source, kept.String()); err != nil {
