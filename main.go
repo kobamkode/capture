@@ -517,6 +517,28 @@ func (d dailyNotes) notePath(day time.Time) string {
 	return filepath.Join(d.dir, day.Format(d.layout)+".md")
 }
 
+// names lists the Daily notes in the directory, in filename order, skipping
+// anything whose name is not a day under the layout. Order is the directory's,
+// not the calendar's: a caller that needs the days themselves parses each name.
+func (d dailyNotes) names() ([]string, error) {
+	entries, err := os.ReadDir(d.dir)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".md") {
+			continue
+		}
+		if _, err := time.Parse(d.layout, strings.TrimSuffix(name, ".md")); err != nil {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
 // findCaptures prints every capture whose id column equals id, as
 // "path:line:text", oldest daily note first. Only files named by the daily
 // layout are read, so unrelated Markdown in the vault cannot supply a hit and
@@ -526,18 +548,11 @@ func findCaptures(notes dailyNotes, id string, stdout io.Writer) error {
 	if !findID.MatchString(id) {
 		return fmt.Errorf("not a capture id (seven lowercase hex characters): %s", id)
 	}
-	entries, err := os.ReadDir(notes.dir)
+	names, err := notes.names()
 	if err != nil {
 		return err
 	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".md") {
-			continue
-		}
-		if _, err := time.Parse(notes.layout, strings.TrimSuffix(name, ".md")); err != nil {
-			continue
-		}
+	for _, name := range names {
 		path := filepath.Join(notes.dir, name)
 		b, err := os.ReadFile(path)
 		if err != nil {
@@ -599,18 +614,14 @@ func dateOf(t time.Time) time.Time {
 // edited today is not promoted by its modification time. Ties on one date go
 // to the greater filename.
 func previousDailyNote(notes dailyNotes) (string, bool, error) {
-	entries, err := os.ReadDir(notes.dir)
+	names, err := notes.names()
 	if err != nil {
 		return "", false, err
 	}
 	today := dateOf(notes.now)
 	best := ""
 	var bestDay time.Time
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".md") {
-			continue
-		}
+	for _, name := range names {
 		parsed, err := time.Parse(notes.layout, strings.TrimSuffix(name, ".md"))
 		if err != nil {
 			continue
