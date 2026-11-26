@@ -1757,10 +1757,10 @@ func TestRunMoveSecondRunIsNoOp(t *testing.T) {
 	}
 }
 
-// No Previous daily note, a note with nothing movable, or only a future-dated
-// note are all empty results: no output, exit 0, no file created for today.
-// Exactly one note is read, so a newer note without Tasks hides an older one
-// that holds them.
+// No Previous daily note, a daily note with nothing movable, or only a
+// future-dated daily note are all empty results: no output, exit 0, no file
+// created for today. Exactly one daily note is read, so a newer one without
+// Tasks hides an older one that holds them.
 func TestRunMoveEmptyResults(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -1783,7 +1783,7 @@ func TestRunMoveEmptyResults(t *testing.T) {
 			},
 		},
 		{
-			name: "newest older note has no tasks, an older one has",
+			name: "newest older daily note has no tasks, an older one has",
 			files: map[string]string{
 				"2026-10-10.md": "- [ ] | 08:00 | 1c2d3e4 | stranded older task\n",
 				"2026-10-13.md": "- 08:00 | a1b2c3d | only a note\n",
@@ -1832,9 +1832,9 @@ func TestRunMoveEmptyResults(t *testing.T) {
 }
 
 // The source is the newest Daily note dated before today, however old: a
-// future-dated note and any note older than the newest one before today are
-// left alone, and today's own Task is never a source.
-func TestRunMoveSelectsNewestNoteBeforeToday(t *testing.T) {
+// future-dated daily note and any daily note older than the newest one before
+// today are left alone, and today's own Task is never a source.
+func TestRunMoveSelectsNewestDailyNoteBeforeToday(t *testing.T) {
 	vault := t.TempDir()
 	getenv := func(key string) string {
 		if key == "CAPTURE_VAULT" {
@@ -1919,8 +1919,8 @@ func TestRunMoveParsesFilenamesNotStringOrder(t *testing.T) {
 	}
 }
 
-// Two notes dated the same day tie on the greater filename, not on which one
-// happens to be newer on disk.
+// Two daily notes dated the same day tie on the greater filename, not on which
+// one happens to be newer on disk.
 func TestRunMoveTieOnOneDateGoesToGreaterFilename(t *testing.T) {
 	vault := t.TempDir()
 	getenv := func(key string) string {
@@ -1950,8 +1950,15 @@ func TestRunMoveTieOnOneDateGoesToGreaterFilename(t *testing.T) {
 	if stdout.String() != laterBody {
 		t.Errorf("stdout = %q, want the greater filename's task", stdout.String())
 	}
+	if got, err := os.ReadFile(filepath.Join(vault, "October 14, 2026 09.md")); err != nil || string(got) != laterBody {
+		t.Errorf("today's note = %q, %v; want the greater filename's task", got, err)
+	}
 	if got, err := os.ReadFile(earlier); err != nil || string(got) != earlierBody {
 		t.Errorf("lesser filename changed: %q, %v", got, err)
+	}
+	// The greater filename is the source, so its task left it behind.
+	if got, err := os.ReadFile(later); err != nil || len(got) != 0 {
+		t.Errorf("greater filename = %q, %v; want an existing empty file", got, err)
 	}
 }
 
