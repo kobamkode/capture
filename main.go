@@ -317,8 +317,13 @@ func runWithOpener(args []string, getenv func(string) string, now time.Time, std
 		}
 		buf.WriteString(e)
 	}
-	line := buf.String()
+	return appendToNote(path, buf.String())
+}
 
+// appendToNote adds line to the end of the Daily note, creating the note when
+// it is missing. A note that already holds text without a trailing newline
+// gets one first, so the new entry never lands on the last line of the old one.
+func appendToNote(path, line string) error {
 	existing, err := os.ReadFile(path)
 	if err == nil {
 		if len(existing) > 0 && existing[len(existing)-1] != '\n' {
