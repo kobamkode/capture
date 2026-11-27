@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -52,6 +53,7 @@ func randomID() (string, error) {
 const helpText = `Usage: capture [flags] text...
        capture open
        capture find <id>
+       capture ask <id> [instruction...]
        capture move
        echo "line" | capture
 
@@ -71,6 +73,15 @@ Commands:
         under CAPTURE_DAILY_FORMAT are ignored. No match is an empty result:
         no output, exit 0. Takes no flags, no stdin, and exactly one id. To
         capture the word itself, use -- : capture -- find <text>.
+  ask <id> [instruction...]
+        call a capture back into the pi agent: the capture's text and the
+        remaining words as the instruction (default: explain the capture and
+        what it was about) are handed to pi, which inherits this terminal. The
+        first hit in daily-note order is used. After pi exits successfully, an
+        open task among the hits is offered for closing: "y" flips its box in
+        the daily note, anything else leaves it. No flags; stdin is not capture
+        input but pi's own terminal input and the closing answer. To capture
+        the word itself, use -- : capture -- ask <text>.
   move
         move the unfinished tasks of the previous daily note into today's:
         append them verbatim, delete them from the source, and print what
@@ -154,13 +165,27 @@ var stdinRefusals = map[string]string{
 }
 
 func runWithOpener(args []string, getenv func(string) string, now time.Time, stdin io.Reader, stdout, stderr io.Writer, open func(string) error) error {
-	// `capture open`, `capture find` and `capture move` are commands, not
+	return runWithAgent(args, getenv, now, stdin, stdout, stderr, open, askPi)
+}
+
+// askPi hands prompt to the pi agent with this terminal inherited, so the
+// session stays interactive: nothing here redirects its stdin, stdout or stderr.
+func askPi(prompt string) error {
+	cmd := exec.Command("pi", prompt)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return cmd.Run()
+}
+
+// runWithAgent is run with both the Obsidian launch and the pi agent
+// intercepted: tests must not start a real session.
+func runWithAgent(args []string, getenv func(string) string, now time.Time, stdin io.Reader, stdout, stderr io.Writer, open func(string) error, agent func(string) error) error {
+	// `capture open`, `capture find`, `capture ask` and `capture move` are commands, not
 	// captures of the words themselves. Each must be the first argument, so
 	// `capture -t open` and `capture -- move` still capture the text.
 	command := ""
 	if len(args) > 0 {
 		switch args[0] {
-		case "open", "find", "move":
+		case "open", "find", "ask", "move":
 			command, args = args[0], args[1:]
 		}
 	}
@@ -205,6 +230,10 @@ func runWithOpener(args []string, getenv func(string) string, now time.Time, std
 		if task || list || week || len(flags.Args()) != 1 {
 			return errors.New("find takes exactly one capture id")
 		}
+	case "ask":
+		if task || list || week || len(flags.Args()) < 1 {
+			return errors.New("ask takes exactly one capture id and an optional instruction")
+		}
 	default:
 		if week && !list {
 			// Week is a listing modifier: alone it is a mistyped command, so
@@ -225,7 +254,10 @@ func runWithOpener(args []string, getenv func(string) string, now time.Time, std
 			isTerminal = true
 		}
 	}
-	if !isTerminal {
+	// Ask is the one command whose stdin is not capture input: it carries the
+	// closing answer and, in a real run, the agent's own terminal input, so
+	// draining it here would eat both.
+	if !isTerminal && command != "ask" {
 		b, err := io.ReadAll(stdin)
 		if err != nil {
 			return fmt.Errorf("reading stdin: %w", err)
@@ -293,6 +325,9 @@ func runWithOpener(args []string, getenv func(string) string, now time.Time, std
 	// reads the directory and never creates or writes anything.
 	if command == "find" {
 		return findCaptures(notes, flags.Args()[0], stdout)
+	}
+	if command == "ask" {
+		return askCapture(notes, flags.Args()[0], strings.Join(flags.Args()[1:], " "), stdin, stderr, agent)
 	}
 
 	path := notes.notePath(now)
@@ -538,32 +573,123 @@ func (d dailyNotes) names() ([]string, error) {
 	return names, nil
 }
 
-// findCaptures prints every capture whose id column equals id, as
-// "path:line:text", oldest daily note first. Only files named by the daily
-// layout are read, so unrelated Markdown in the vault cannot supply a hit and
-// a misconfigured vault is not swept. A missing id is an empty result: no
-// output, no error, nothing created.
-func findCaptures(notes dailyNotes, id string, stdout io.Writer) error {
+// hit is one stored capture as the vault holds it: the Daily note and line it
+// lives on, the line verbatim, and the line's text with the time and id columns
+// stripped — what an agent reads and the caller recognises.
+type hit struct {
+	path string
+	line int
+	raw  string
+	text string
+}
+
+// findHits collects every capture whose id column equals id, oldest Daily note
+// first. Only files named by the daily layout are read, so unrelated Markdown in
+// the vault cannot supply a hit and a misconfigured vault is not swept. A
+// missing id is an empty result: no error, nothing created.
+func findHits(notes dailyNotes, id string) ([]hit, error) {
 	if !findID.MatchString(id) {
-		return fmt.Errorf("not a capture id (seven lowercase hex characters): %s", id)
+		return nil, fmt.Errorf("not a capture id (seven lowercase hex characters): %s", id)
 	}
 	names, err := notes.names()
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var hits []hit
 	for _, name := range names {
 		path := filepath.Join(notes.dir, name)
 		b, err := os.ReadFile(path)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		for i, line := range strings.Split(strings.TrimSuffix(string(b), "\n"), "\n") {
-			if m := idColumn.FindStringSubmatch(line); m != nil && m[1] == id {
-				fmt.Fprintf(stdout, "%s:%d:%s\n", path, i+1, line)
+			m := idColumn.FindStringSubmatch(line)
+			if m == nil || m[1] != id {
+				continue
 			}
+			hits = append(hits, hit{
+				path: path,
+				line: i + 1,
+				raw:  line,
+				text: strings.TrimRight(line[len(m[0]):], " \t"),
+			})
 		}
 	}
+	return hits, nil
+}
+
+// findCaptures prints every capture whose id column equals id, as
+// "path:line:text", oldest daily note first.
+func findCaptures(notes dailyNotes, id string, stdout io.Writer) error {
+	hits, err := findHits(notes, id)
+	if err != nil {
+		return err
+	}
+	for _, h := range hits {
+		fmt.Fprintf(stdout, "%s:%d:%s\n", h.path, h.line, h.raw)
+	}
 	return nil
+}
+
+// askDefaultInstruction is what ask tells the agent when the caller gives no
+// instruction of their own.
+const askDefaultInstruction = "Explain this capture and what it was about."
+
+// askCapture calls a capture back into the pi agent: the capture's text and the
+// caller's instruction go to the agent, which inherits this terminal. An open
+// Task is then offered for closing — the agent answering a task is not the same
+// as the task being done, so the box is flipped only on a "y". Nothing is
+// written when the agent fails.
+func askCapture(notes dailyNotes, id, instruction string, stdin io.Reader, stderr io.Writer, agent func(string) error) error {
+	hits, err := findHits(notes, id)
+	if err != nil {
+		return err
+	}
+	if len(hits) == 0 {
+		return fmt.Errorf("no capture %s", id)
+	}
+	if instruction == "" {
+		instruction = askDefaultInstruction
+	}
+	if err := agent(hits[0].text + "\n\n" + instruction); err != nil {
+		return fmt.Errorf("pi: %w", err)
+	}
+	if !strings.HasPrefix(hits[0].raw, taskPrefix) {
+		return nil
+	}
+	fmt.Fprintf(stderr, "%s is a task — mark it done? [y/N] ", id)
+	answer, err := bufio.NewReader(stdin).ReadString('\n')
+	if err != nil && answer == "" {
+		return nil // no answer at all: leave the task open
+	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(answer)), "y") {
+		return nil
+	}
+	return closeTask(hits[0], id)
+}
+
+// closeTask flips one Task's box in its Daily note. The line is addressed by
+// number but flipped only when it still holds this id, so a note edited
+// meanwhile is left alone. A task already checked stays as it is.
+func closeTask(h hit, id string) error {
+	b, err := os.ReadFile(h.path)
+	if err != nil {
+		return err
+	}
+	// SplitAfter keeps each newline, so joining reproduces the note's bytes.
+	lines := strings.SplitAfter(string(b), "\n")
+	if h.line > len(lines) {
+		return fmt.Errorf("capture %s is gone from %s", id, h.path)
+	}
+	line := lines[h.line-1]
+	if m := idColumn.FindStringSubmatch(line); m == nil || m[1] != id {
+		return fmt.Errorf("capture %s is gone from %s line %d", id, h.path, h.line)
+	}
+	if !strings.HasPrefix(line, taskPrefix) {
+		return nil
+	}
+	lines[h.line-1] = "- [x] " + strings.TrimPrefix(line, taskPrefix)
+	return rewriteNote(h.path, strings.Join(lines, ""))
 }
 
 // listCaptures prints today's capture-shaped lines verbatim in file order.
