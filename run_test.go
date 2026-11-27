@@ -1615,6 +1615,317 @@ func TestRunFindWordRemainsCapturable(t *testing.T) {
 	}
 }
 
+// recordingAgent stands in for the pi session, recording the prompts run hands
+// it so tests never start a real interactive agent.
+type recordingAgent struct {
+	prompts []string
+	err     error
+}
+
+func (a *recordingAgent) ask(prompt string) error {
+	a.prompts = append(a.prompts, prompt)
+	return a.err
+}
+
+// Ask hands a capture's text and the caller's own words to the agent, joined as
+// one instruction, and writes nothing: the hit is a Note, so no closing is
+// offered and the Daily note keeps its bytes.
+func TestRunAskSendsCaptureAndInstruction(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+	path := filepath.Join(vault, "2026-10-13.md")
+	body := "# Daily\n\n- 08:00 | a1b2c3d | call the dentist   \n"
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	opener := &recordingOpener{}
+	agent := &recordingAgent{}
+	stdin := newStatReader(os.ModeCharDevice, "")
+
+	var stdout, stderr bytes.Buffer
+	args := []string{"ask", "a1b2c3d", "what", "did", "I", "mean?"}
+	if err := runWithAgent(args, getenv, testClock, stdin, &stdout, &stderr, opener.open, agent.ask); err != nil {
+		t.Fatalf("run(ask): %v", err)
+	}
+	want := "call the dentist\n\nwhat did I mean?"
+	if len(agent.prompts) != 1 || agent.prompts[0] != want {
+		t.Errorf("agent got %q, want exactly [%q]", agent.prompts, want)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Errorf("ask on a note must be silent, got stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if len(opener.urls) != 0 {
+		t.Errorf("ask opened Obsidian: %v", opener.urls)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != body {
+		t.Errorf("ask modified the Daily note: %q, %v", got, err)
+	}
+}
+
+// With no instruction of its own ask explains the capture, and it never reads a
+// terminal stdin: a bare `capture ask <id>` must not block until Ctrl-D.
+func TestRunAskDefaultsInstruction(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+	if err := os.WriteFile(filepath.Join(vault, "2026-10-14.md"),
+		[]byte("- 09:00 | a1b2c3d | buy milk\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdin := newStatReader(os.ModeCharDevice, "")
+	agent := &recordingAgent{}
+
+	var stdout, stderr bytes.Buffer
+	if err := runWithAgent([]string{"ask", "a1b2c3d"}, getenv, testClock, stdin, &stdout, &stderr, (&recordingOpener{}).open, agent.ask); err != nil {
+		t.Fatalf("run(ask): %v", err)
+	}
+	if stdin.read {
+		t.Error("ask read a terminal stdin; it must never block waiting for EOF")
+	}
+	want := "buy milk\n\n" + askDefaultInstruction
+	if len(agent.prompts) != 1 || agent.prompts[0] != want {
+		t.Errorf("agent got %q, want exactly [%q]", agent.prompts, want)
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("stderr = %q, want empty: a note is never closed", stderr.String())
+	}
+}
+
+// A Task answered with y is closed in place: only its own box flips, every
+// other byte of the note stays, and the note keeps its mode.
+func TestRunAskClosesTaskOnYes(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+	path := filepath.Join(vault, "2026-10-13.md")
+	body := "# Daily\n\n- [ ] | 08:10 | 0badf00 | go to dentist\n- 08:20 | deadbee | a note stays\n"
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	agent := &recordingAgent{}
+
+	var stdout, stderr bytes.Buffer
+	args := []string{"ask", "0badf00", "summarise"}
+	if err := runWithAgent(args, getenv, testClock, strings.NewReader("y\n"), &stdout, &stderr, (&recordingOpener{}).open, agent.ask); err != nil {
+		t.Fatalf("run(ask): %v", err)
+	}
+	want := "# Daily\n\n- [x] | 08:10 | 0badf00 | go to dentist\n- 08:20 | deadbee | a note stays\n"
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Errorf("Daily note = %q, want %q", got, want)
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0600 {
+		t.Errorf("note mode = %v, %v, want 0600", info.Mode().Perm(), err)
+	}
+	if !strings.Contains(stderr.String(), "mark it done?") {
+		t.Errorf("stderr = %q, want the closing question", stderr.String())
+	}
+	if len(agent.prompts) != 1 || agent.prompts[0] != "go to dentist\n\nsummarise" {
+		t.Errorf("agent got %q, want the task's text and the instruction", agent.prompts)
+	}
+}
+
+// Anything but a y leaves the Task open: a n, and an answer that never comes
+// (EOF) both keep the note as it was.
+func TestRunAskLeavesTaskOpenWithoutYes(t *testing.T) {
+	cases := []struct {
+		name  string
+		stdin string
+	}{
+		{"answered no", "n\n"},
+		{"no answer", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vault := t.TempDir()
+			getenv := func(key string) string {
+				if key == "CAPTURE_VAULT" {
+					return vault
+				}
+				return ""
+			}
+			path := filepath.Join(vault, "2026-10-13.md")
+			body := "- [ ] | 08:10 | 0badf00 | go to dentist\n"
+			if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr bytes.Buffer
+			err := runWithAgent([]string{"ask", "0badf00"}, getenv, testClock,
+				strings.NewReader(tc.stdin), &stdout, &stderr, (&recordingOpener{}).open, (&recordingAgent{}).ask)
+			if err != nil {
+				t.Fatalf("run(ask): %v", err)
+			}
+			if got, err := os.ReadFile(path); err != nil || string(got) != body {
+				t.Errorf("ask closed the task anyway: %q, %v", got, err)
+			}
+		})
+	}
+}
+
+// A failing agent aborts the whole ask: nothing is written and no closing is
+// offered, because the task was not answered.
+func TestRunAskAgentFailureLeavesTaskOpen(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+	path := filepath.Join(vault, "2026-10-13.md")
+	body := "- [ ] | 08:10 | 0badf00 | go to dentist\n"
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	agent := &recordingAgent{err: errors.New("exit status 2")}
+
+	var stdout, stderr bytes.Buffer
+	err := runWithAgent([]string{"ask", "0badf00"}, getenv, testClock,
+		strings.NewReader("y\n"), &stdout, &stderr, (&recordingOpener{}).open, agent.ask)
+	if err == nil || !strings.Contains(err.Error(), "exit status 2") {
+		t.Fatalf("error = %v, want the agent's failure", err)
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("stderr = %q, want no closing question", stderr.String())
+	}
+	if got, _ := os.ReadFile(path); string(got) != body {
+		t.Errorf("Daily note = %q, want it untouched", got)
+	}
+}
+
+// An unknown id starts no session at all: there is nothing to ask about.
+func TestRunAskUnknownIDStartsNoSession(t *testing.T) {
+	vault := t.TempDir()
+	getenv := func(key string) string {
+		if key == "CAPTURE_VAULT" {
+			return vault
+		}
+		return ""
+	}
+	if err := os.WriteFile(filepath.Join(vault, "2026-10-14.md"),
+		[]byte("- 09:00 | 0badf00 | other\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	agent := &recordingAgent{}
+
+	var stdout, stderr bytes.Buffer
+	err := runWithAgent([]string{"ask", "a1b2c3d"}, getenv, testClock,
+		strings.NewReader(""), &stdout, &stderr, (&recordingOpener{}).open, agent.ask)
+	if err == nil || !strings.Contains(err.Error(), "no capture a1b2c3d") {
+		t.Fatalf("error = %v, want a missing capture", err)
+	}
+	if len(agent.prompts) != 0 {
+		t.Errorf("agent got %q, want no session", agent.prompts)
+	}
+}
+
+// Ask refuses a call it cannot carry out before touching the vault or the
+// agent: no id at all, a flag, or a malformed id.
+func TestRunAskRejectsCaptureInput(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"no id", []string{"ask"}, "exactly one capture id"},
+		{"list flag", []string{"ask", "-l", "a1b2c3d"}, "exactly one capture id"},
+		{"uppercase id", []string{"ask", "A1B2C3D"}, "not a capture id"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vault := t.TempDir()
+			getenv := func(key string) string {
+				if key == "CAPTURE_VAULT" {
+					return vault
+				}
+				return ""
+			}
+			agent := &recordingAgent{}
+			var stdout, stderr bytes.Buffer
+			err := runWithAgent(tc.args, getenv, testClock, strings.NewReader(""), &stdout, &stderr,
+				(&recordingOpener{}).open, agent.ask)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+			if len(agent.prompts) != 0 {
+				t.Errorf("agent got %q, want no session", agent.prompts)
+			}
+			if entries, readErr := os.ReadDir(vault); readErr != nil || len(entries) != 0 {
+				t.Errorf("rejected ask touched the vault: %v, %v", entries, readErr)
+			}
+		})
+	}
+}
+
+// The word ask is still a capture when it is not the first argument, so an
+// existing habit of capturing the word itself keeps working.
+func TestRunAskWordRemainsCapturable(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"-- separator", []string{"--", "ask", "a1b2c3d"}, "- 09:15 | ask a1b2c3d\n"},
+		{"task flag before", []string{"-t", "ask", "a1b2c3d"}, "- [ ] | 09:15 | ask a1b2c3d\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vault := t.TempDir()
+			getenv := func(key string) string {
+				if key == "CAPTURE_VAULT" {
+					return vault
+				}
+				return ""
+			}
+			var stdout, stderr bytes.Buffer
+			if err := run(tc.args, getenv, testClock, strings.NewReader(""), &stdout, &stderr); err != nil {
+				t.Fatalf("run(%v): %v", tc.args, err)
+			}
+			got, err := os.ReadFile(filepath.Join(vault, "2026-10-14.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if withoutIDs(string(got)) != tc.want {
+				t.Errorf("2026-10-14.md = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Closing addresses the Task by line but never flips a line that stopped
+// holding this id, so a note edited between the lookup and the answer is safe.
+func TestCloseTaskSkipsLineThatNoLongerHoldsTheID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "2026-10-14.md")
+	body := "- [ ] | 09:00 | 0badf00 | someone else's task\n"
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	h := hit{path: path, line: 1, raw: "- [ ] | 09:00 | a1b2c3d | mine"}
+	err := closeTask(h, "a1b2c3d")
+	if err == nil || !strings.Contains(err.Error(), "no capture") && !strings.Contains(err.Error(), "gone") {
+		t.Fatalf("error = %v, want a stale-line error", err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != body {
+		t.Errorf("Daily note = %q, want it untouched", got)
+	}
+}
+
 // A Move drains the Previous daily note of its unfinished Tasks: they arrive in
 // today's note in source order, verbatim, and leave the source; checked Tasks,
 // Notes, prose, headings and nested checkboxes stay where they are. Today's
