@@ -28,6 +28,10 @@ _Avoid_: last file, yesterday's note, latest note
 The act of taking the unfinished **Tasks** of the **Previous daily note** into today's **Daily note**, where each arrives as the same Task: same id, same capture time, same text.
 _Avoid_: rollover, carry-over, migration, transfer
 
+**Ask**:
+The act of handing one **Capture**'s text to the pi agent together with an instruction, so the agent explains or works on it; closing a **Task** afterwards is a separate confirmation, not part of the answer.
+_Avoid_: jpi, handoff, prompt, send
+
 **Capture id**:
 The seven hex characters between pipes in a rendered line (`- 09:15 | 0b17a3b | text`), the shape of a git short hash, unique within a Daily note; `capture find <id>` calls the capture back.
 _Avoid_: hash, uuid, key
